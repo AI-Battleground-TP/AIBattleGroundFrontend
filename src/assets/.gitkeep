@@ -1,0 +1,20 @@
+# Assets Directory
+
+Place your static assets here:
+- Images (.png, .jpg, .svg)
+- Icons
+- Logos
+- Fonts (if not using web fonts)
+
+Example structure:
+```
+assets/
+├── images/
+│   ├── logo.svg
+│   └── hero-bg.png
+├── icons/
+│   └── arrow.svg
+└── fonts/
+    └── custom-font.woff2
+```
+

@@ -1,6 +1,13 @@
-import React, { useState } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Card } from "../../components";
 import { Progress } from "../../components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
 import {
   Table,
   TableBody,
@@ -9,17 +16,23 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
-import { dummyLeaderboard } from "../../utils/dummyData";
-import type { LeaderboardEntry } from "../../types";
+import { dummyLeaderboard, dummyLeaderboardByCategory } from "../../utils/dummyData";
+import type { LeaderboardEntry, LeaderboardCategory } from "../../types";
 
 type SortField = "eloRating" | "winRate" | "avgResponseTime" | "totalVotes";
 type SortDirection = "asc" | "desc";
 
 export const Leaderboard: React.FC = () => {
-  const [leaderboard, setLeaderboard] =
-    useState<LeaderboardEntry[]>(dummyLeaderboard);
+  const [selectedCategory, setSelectedCategory] = useState<LeaderboardCategory>("all");
   const [sortField, setSortField] = useState<SortField>("eloRating");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+
+  // Get leaderboard data based on selected category
+  const categoryLeaderboard = useMemo(() => {
+    return dummyLeaderboardByCategory[selectedCategory] || dummyLeaderboard;
+  }, [selectedCategory]);
+
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
 
   const handleSort = (field: SortField) => {
     const newDirection =
@@ -60,9 +73,32 @@ export const Leaderboard: React.FC = () => {
     return `${index + 1}`;
   };
 
+  const categoryLabels: Record<LeaderboardCategory, string> = {
+    all: "All Categories",
+    health: "Health",
+    sports: "Sports",
+    mathematics: "Mathematics",
+    philosophy: "Philosophy",
+    religion: "Religion",
+  };
+
+  // Update leaderboard when category or sort changes
+  useEffect(() => {
+    const sorted = [...categoryLeaderboard].sort((a, b) => {
+      const aValue = a[sortField];
+      const bValue = b[sortField];
+      if (sortDirection === "desc") {
+        return bValue > aValue ? 1 : -1;
+      } else {
+        return aValue > bValue ? 1 : -1;
+      }
+    });
+    setLeaderboard(sorted);
+  }, [selectedCategory, sortField, sortDirection, categoryLeaderboard]);
+
   return (
     <div className="space-y-8">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold text-foreground">
             Model Leaderboard
@@ -70,6 +106,27 @@ export const Leaderboard: React.FC = () => {
           <p className="text-muted-foreground mt-2">
             Rankings based on blind evaluation results using ELO rating system
           </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="text-sm font-medium text-foreground whitespace-nowrap">
+            Category:
+          </label>
+          <Select
+            value={selectedCategory}
+            onValueChange={(value) => setSelectedCategory(value as LeaderboardCategory)}
+          >
+            <SelectTrigger className="w-[200px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{categoryLabels.all}</SelectItem>
+              <SelectItem value="health">{categoryLabels.health}</SelectItem>
+              <SelectItem value="sports">{categoryLabels.sports}</SelectItem>
+              <SelectItem value="mathematics">{categoryLabels.mathematics}</SelectItem>
+              <SelectItem value="philosophy">{categoryLabels.philosophy}</SelectItem>
+              <SelectItem value="religion">{categoryLabels.religion}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
@@ -112,7 +169,7 @@ export const Leaderboard: React.FC = () => {
         </Card>
       </div>
 
-      <Card title="Model Rankings">
+      <Card title={`Model Rankings - ${categoryLabels[selectedCategory]}`}>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>

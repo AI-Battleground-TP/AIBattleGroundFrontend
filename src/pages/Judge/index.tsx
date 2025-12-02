@@ -1,13 +1,15 @@
 import React, { useState } from "react";
-import { Button, Card, Toast } from "../../components";
+import { Button, Card, Toast, Textarea } from "../../components";
 import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import { Progress } from "../../components/ui/progress";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { Info } from "lucide-react";
 import { dummyComparisons } from "../../utils/dummyData";
-import type { ModelPair } from "../../types";
+// TODO: Connect to actual experiments from AppContext when experiment-to-pair mapping is implemented
+// import { useApp } from "../../context/AppContext";
+import type { ModelPair, EvaluationOption } from "../../types";
 
-// Dummy comparison pairs for judges to evaluate
+// Dummy experiment pairs for judges to evaluate
 const dummyComparisonPairs: ModelPair[] = [
   {
     id: "pair-1",
@@ -76,21 +78,68 @@ const dummyComparisonPairs: ModelPair[] = [
 ];
 
 export const Judge: React.FC = () => {
+  // TODO: Connect to actual experiments from AppContext when experiment-to-pair mapping is implemented
+  // const { experiments } = useApp();
   const [comparisonPairs] = useState<ModelPair[]>(dummyComparisonPairs);
   const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
   const [currentPromptIndex, setCurrentPromptIndex] = useState(0);
   const [selectedWinner, setSelectedWinner] = useState<
-    "A" | "B" | "tie" | "both-poor" | null
+    "A" | "B" | "tie" | "both-poor" | "dont-know" | null
   >(null);
   const [showToast, setShowToast] = useState(false);
   const [showAlertToast, setShowAlertToast] = useState(false);
   const [alertMessage, setAlertMessage] = useState("");
   const [evaluations, setEvaluations] = useState<
-    Record<string, Record<number, "A" | "B" | "tie" | "both-poor">>
+    Record<string, Record<number, "A" | "B" | "tie" | "both-poor" | "dont-know">>
+  >({});
+  const [feedback, setFeedback] = useState<
+    Record<
+      string,
+      Record<
+        number,
+        {
+          commentA: string;
+          commentB: string;
+        }
+      >
+    >
   >({});
 
   const selectedPair = comparisonPairs.find((p) => p.id === selectedPairId);
+  
+  // All evaluation options are always available
+  const availableOptions: EvaluationOption[] = ["A", "B", "tie", "both-poor", "dont-know"];
+  const evaluationCriteria = selectedPair?.purpose;
+  
   const currentPrompt = selectedPair?.prompts[currentPromptIndex];
+  const currentFeedback =
+    (selectedPairId &&
+      feedback[selectedPairId] &&
+      feedback[selectedPairId][currentPromptIndex]) || undefined;
+
+  const handleFeedbackChange = (
+    model: "A" | "B",
+    value: string
+  ) => {
+    if (!selectedPairId) return;
+
+    setFeedback((prev) => ({
+      ...prev,
+      [selectedPairId]: {
+        ...(prev[selectedPairId] || {}),
+        [currentPromptIndex]: {
+          commentA:
+            model === "A"
+              ? value
+              : prev[selectedPairId]?.[currentPromptIndex]?.commentA || "",
+          commentB:
+            model === "B"
+              ? value
+              : prev[selectedPairId]?.[currentPromptIndex]?.commentB || "",
+        },
+      },
+    }));
+  };
 
   const handleBackToList = () => {
     setSelectedPairId(null);
@@ -98,35 +147,6 @@ export const Judge: React.FC = () => {
     setSelectedWinner(null);
   };
 
-  const handleVote = () => {
-    if (!selectedWinner || !selectedPairId) {
-      setAlertMessage("Please select a winner");
-      setShowAlertToast(true);
-      return;
-    }
-
-    // Save evaluation
-    setEvaluations({
-      ...evaluations,
-      [selectedPairId]: {
-        ...evaluations[selectedPairId],
-        [currentPromptIndex]: selectedWinner,
-      },
-    });
-
-    setShowToast(true);
-    setSelectedWinner(null);
-
-    // Move to next prompt or finish
-    if (selectedPair && currentPromptIndex < selectedPair.prompts.length - 1) {
-      setCurrentPromptIndex(currentPromptIndex + 1);
-    } else {
-      // Finished all prompts
-      setTimeout(() => {
-        handleBackToList();
-      }, 1500);
-    }
-  };
 
   const handlePrevious = () => {
     if (currentPromptIndex > 0) {
@@ -137,10 +157,31 @@ export const Judge: React.FC = () => {
   };
 
   const handleNext = () => {
+    if (!selectedWinner || !selectedPairId) {
+      setAlertMessage("Please select an option before proceeding");
+      setShowAlertToast(true);
+      return;
+    }
+
+    // Save evaluation before moving
+    setEvaluations({
+      ...evaluations,
+      [selectedPairId]: {
+        ...evaluations[selectedPairId],
+        [currentPromptIndex]: selectedWinner,
+      },
+    });
+
     if (selectedPair && currentPromptIndex < selectedPair.prompts.length - 1) {
       setCurrentPromptIndex(currentPromptIndex + 1);
-      const nextVote = evaluations[selectedPairId!]?.[currentPromptIndex + 1];
+      const nextVote = evaluations[selectedPairId]?.[currentPromptIndex + 1];
       setSelectedWinner(nextVote || null);
+    } else {
+      // Finished all prompts
+      setShowToast(true);
+      setTimeout(() => {
+        handleBackToList();
+      }, 1500);
     }
   };
 
@@ -154,7 +195,7 @@ export const Judge: React.FC = () => {
               Judge Dashboard
             </h1>
             <p className="text-muted-foreground mt-1">
-              Select a comparison to start evaluating
+              Select an experiment to start evaluating
             </p>
           </div>
         </div>
@@ -162,13 +203,13 @@ export const Judge: React.FC = () => {
         <div className="bg-muted/30 border border-border rounded-lg p-4">
           <p className="text-sm text-muted-foreground">
             <span className="font-semibold">💡 Your Role:</span> You'll compare
-            responses from two anonymous models. Select the comparison below to
+            responses from two anonymous models. Select the experiment below to
             begin evaluating. Your votes help determine which models perform
             best.
           </p>
         </div>
 
-        <Card title="Available Comparisons">
+        <Card title="Available Experiments">
           <div className="space-y-3">
             {comparisonPairs.map((pair) => {
               const pairEvaluations = evaluations[pair.id] || {};
@@ -287,21 +328,21 @@ export const Judge: React.FC = () => {
         </div>
       </div>
 
-      {selectedPair.purpose && (
+      {evaluationCriteria && (
         <Alert className="bg-primary/10 border-primary">
           <Info className="h-4 w-4" />
           <AlertDescription className="text-primary">
-            <strong>Evaluation Criteria:</strong> {selectedPair.purpose}
+            <strong>Evaluation Criteria:</strong> {evaluationCriteria}
           </AlertDescription>
         </Alert>
       )}
 
-      <Alert>
+        <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription>
           <span className="font-semibold">Instructions:</span> Read the prompt
           and both responses carefully.{" "}
-          {selectedPair.purpose
+          {evaluationCriteria
             ? "Use the evaluation criteria above to guide your decision."
             : "Select the response you believe is better based on accuracy, clarity, and helpfulness."}{" "}
           Model identities are hidden to ensure unbiased evaluation.
@@ -325,6 +366,16 @@ export const Judge: React.FC = () => {
                 {dummyComparisons[currentPromptIndex % 3]?.responseA}
               </p>
             </div>
+
+            <div className="mt-4">
+              <Textarea
+                label="Optional feedback for Model A"
+                placeholder="What worked well? What was missing or incorrect?"
+                value={currentFeedback?.commentA || ""}
+                onChange={(e) => handleFeedbackChange("A", e.target.value)}
+                rows={3}
+              />
+            </div>
           </Card>
 
           <Card>
@@ -336,62 +387,98 @@ export const Judge: React.FC = () => {
                 {dummyComparisons[currentPromptIndex % 3]?.responseB}
               </p>
             </div>
+
+            <div className="mt-4">
+              <Textarea
+                label="Optional feedback for Model B"
+                placeholder="What worked well? What was missing or incorrect?"
+                value={currentFeedback?.commentB || ""}
+                onChange={(e) => handleFeedbackChange("B", e.target.value)}
+                rows={3}
+              />
+            </div>
           </Card>
         </div>
 
-        {/* Voting Options - Side by Side */}
+        {/* Voting Options - Dynamic based on experiment settings */}
         <Card>
           <h3 className="text-lg font-semibold text-foreground mb-4">
             Select the Better Response
           </h3>
           <RadioGroup
             value={selectedWinner || ""}
-            onValueChange={(value) => setSelectedWinner(value as "A" | "B" | "tie" | "both-poor")}
-            className="grid grid-cols-2 md:grid-cols-4 gap-3"
+            onValueChange={(value) => setSelectedWinner(value as EvaluationOption)}
+            className={`grid grid-cols-2 gap-3 ${
+              availableOptions.length === 2 ? "md:grid-cols-2" :
+              availableOptions.length === 3 ? "md:grid-cols-3" :
+              availableOptions.length === 4 ? "md:grid-cols-4" :
+              "md:grid-cols-5"
+            }`}
           >
-            <label
-              className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                selectedWinner === "A"
-                  ? "border-primary bg-primary/10"
-                  : "border-border hover:border-primary/50"
-              }`}
-            >
-              <RadioGroupItem value="A" className="mb-2" />
-              <span className="font-medium text-foreground text-center">A</span>
-            </label>
+            {availableOptions.includes("A") && (
+              <label
+                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                  selectedWinner === "A"
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:border-primary/50"
+                }`}
+              >
+                <RadioGroupItem value="A" className="mb-2" />
+                <span className="font-medium text-foreground text-center">Model A</span>
+              </label>
+            )}
 
-            <label
-              className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                selectedWinner === "B"
-                  ? "border-primary bg-primary/10"
-                  : "border-border hover:border-primary/50"
-              }`}
-            >
-              <RadioGroupItem value="B" className="mb-2" />
-              <span className="font-medium text-foreground text-center">B</span>
-            </label>
+            {availableOptions.includes("B") && (
+              <label
+                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                  selectedWinner === "B"
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:border-primary/50"
+                }`}
+              >
+                <RadioGroupItem value="B" className="mb-2" />
+                <span className="font-medium text-foreground text-center">Model B</span>
+              </label>
+            )}
 
-            <label
-              className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                selectedWinner === "tie"
-                  ? "border-primary bg-primary/10"
-                  : "border-border hover:border-primary/50"
-              }`}
-            >
-              <RadioGroupItem value="tie" className="mb-2" />
-              <span className="font-medium text-foreground text-center">Both Good</span>
-            </label>
+            {availableOptions.includes("tie") && (
+              <label
+                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                  selectedWinner === "tie"
+                    ? "border-primary bg-primary/10"
+                    : "border-border hover:border-primary/50"
+                }`}
+              >
+                <RadioGroupItem value="tie" className="mb-2" />
+                <span className="font-medium text-foreground text-center">Both Good</span>
+              </label>
+            )}
 
-            <label
-              className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                selectedWinner === "both-poor"
-                  ? "border-destructive bg-destructive/10"
-                  : "border-border hover:border-destructive/50"
-              }`}
-            >
-              <RadioGroupItem value="both-poor" className="mb-2 text-destructive border-destructive" />
-              <span className="font-medium text-foreground text-center">Both Poor</span>
-            </label>
+            {availableOptions.includes("both-poor") && (
+              <label
+                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                  selectedWinner === "both-poor"
+                    ? "border-destructive bg-destructive/10"
+                    : "border-border hover:border-destructive/50"
+                }`}
+              >
+                <RadioGroupItem value="both-poor" className="mb-2 text-destructive border-destructive" />
+                <span className="font-medium text-foreground text-center">Both Poor</span>
+              </label>
+            )}
+
+            {availableOptions.includes("dont-know") && (
+              <label
+                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                  selectedWinner === "dont-know"
+                    ? "border-muted-foreground bg-muted/30"
+                    : "border-border hover:border-muted-foreground/50"
+                }`}
+              >
+                <RadioGroupItem value="dont-know" className="mb-2" />
+                <span className="font-medium text-foreground text-center text-sm">I don't know</span>
+              </label>
+            )}
           </RadioGroup>
         </Card>
       </div>
@@ -405,19 +492,23 @@ export const Judge: React.FC = () => {
           ← Previous
         </Button>
 
-        <Button onClick={handleVote} size="lg" disabled={!selectedWinner}>
-          {currentPromptIndex === selectedPair.prompts.length - 1
-            ? "Submit Final Vote"
-            : "Submit Vote & Next"}
-        </Button>
-
-        <Button
-          onClick={handleNext}
-          variant="outline"
-          disabled={currentPromptIndex === selectedPair.prompts.length - 1}
-        >
-          Next →
-        </Button>
+        {currentPromptIndex < selectedPair.prompts.length - 1 ? (
+          <Button
+            onClick={handleNext}
+            size="lg"
+            disabled={!selectedWinner}
+          >
+            Next →
+          </Button>
+        ) : (
+          <Button
+            onClick={handleNext}
+            size="lg"
+            disabled={!selectedWinner}
+          >
+            Finish
+          </Button>
+        )}
       </div>
 
       {/* Progress indicator */}
@@ -435,6 +526,8 @@ export const Judge: React.FC = () => {
                   return "🤝 Both Equal";
                 case "both-poor":
                   return "❌ Both Poor";
+                case "dont-know":
+                  return "❓ I don't know";
                 default:
                   return "";
               }

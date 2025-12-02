@@ -7,6 +7,7 @@ import {
   Dashboard,
   Judge,
   Leaderboard,
+  Guidelines,
   UserProfile,
   JudgeProfile,
   Models,
@@ -25,7 +26,10 @@ const ProtectedRoute: React.FC<{
     return <Navigate to="/login" replace />;
   }
 
+  // If role is required, check if user has that role
+  // Otherwise allow access regardless of role
   if (requiredRole && user.role !== requiredRole) {
+    // Redirect to appropriate page based on current role
     return (
       <Navigate to={user.role === "user" ? "/dashboard" : "/judge"} replace />
     );
@@ -42,6 +46,7 @@ export const AppRouter: React.FC = () => {
           <Route path="/" element={<Welcome />} />
           <Route path="/login" element={<Login />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
+          <Route path="/guidelines" element={<Guidelines />} />
           <Route
             path="/dashboard"
             element={

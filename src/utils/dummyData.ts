@@ -95,7 +95,19 @@ export const dummyComparisons: Comparison[] = [
   },
 ];
 
-export const dummyLeaderboard: LeaderboardEntry[] = [
+// Generate category-specific leaderboard data
+const generateCategoryLeaderboard = (category: string, baseEntries: any[]) => {
+  return baseEntries.map((entry) => ({
+    ...entry,
+    id: `${category}-${entry.id}`,
+    eloRating: Math.round(entry.eloRating + (Math.random() * 200 - 100)), // Vary ratings by category
+    winRate: Math.round((entry.winRate + (Math.random() * 10 - 5)) * 10) / 10,
+    totalVotes: Math.floor(entry.totalVotes * (0.7 + Math.random() * 0.6)),
+    category: category as any,
+  }));
+};
+
+const baseLeaderboard = [
   {
     id: "1",
     modelName: "GPT-4 Turbo",
@@ -143,14 +155,32 @@ export const dummyLeaderboard: LeaderboardEntry[] = [
   },
 ];
 
+// All categories leaderboard (general)
+export const dummyLeaderboard: LeaderboardEntry[] = baseLeaderboard.map(entry => ({
+  ...entry,
+  category: "all" as any,
+}));
+
+// Category-specific leaderboards
+export const dummyLeaderboardByCategory: Record<string, LeaderboardEntry[]> = {
+  all: dummyLeaderboard,
+  health: generateCategoryLeaderboard("health", baseLeaderboard),
+  sports: generateCategoryLeaderboard("sports", baseLeaderboard),
+  mathematics: generateCategoryLeaderboard("mathematics", baseLeaderboard),
+  philosophy: generateCategoryLeaderboard("philosophy", baseLeaderboard),
+  religion: generateCategoryLeaderboard("religion", baseLeaderboard),
+};
+
 export const dummyUser: User = {
   id: "user1",
   name: "John Doe",
+  email: "john.doe@example.com",
   role: "user",
 };
 
 export const dummyJudge: User = {
   id: "judge1",
   name: "Jane Smith",
+  email: "jane.smith@example.com",
   role: "judge",
 };

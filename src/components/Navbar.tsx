@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Button } from "./Button";
 import { Modal } from "./Modal";
@@ -17,7 +17,8 @@ import { User, MoreVertical } from "lucide-react";
 
 export const Navbar: React.FC = () => {
   const location = useLocation();
-  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const { user, logout, switchRole } = useAuth();
   const [activeModal, setActiveModal] = useState<
     "about" | "howItWorks" | "help" | null
   >(null);
@@ -32,6 +33,18 @@ export const Navbar: React.FC = () => {
 
   const handleLogout = () => {
     logout();
+  };
+
+  const handleRoleSwitch = (newRole: "user" | "judge") => {
+    if (user && user.role !== newRole) {
+      switchRole(newRole);
+      // Navigate to appropriate page based on new role
+      if (newRole === "user") {
+        navigate("/dashboard");
+      } else {
+        navigate("/judge");
+      }
+    }
   };
 
   return (
@@ -59,7 +72,18 @@ export const Navbar: React.FC = () => {
                   Leaderboard
                 </Button>
               </Link>
-              {user?.role === "user" && (
+              {user && user.role === "judge" && (
+                <Link to="/guidelines">
+                  <Button
+                    size="sm"
+                    variant={isActive("/guidelines") ? "secondary" : "ghost"}
+                    className="px-2"
+                  >
+                    Guidelines
+                  </Button>
+                </Link>
+              )}
+              {user && user.role === "user" && (
                 <>
                   <Link to="/dashboard">
                     <Button
@@ -99,22 +123,48 @@ export const Navbar: React.FC = () => {
                   </Link>
                 </>
               )}
-              {user?.role === "judge" && (
-                <Link to="/judge">
-                  <Button
-                    size="sm"
-                    variant={isActive("/judge") ? "secondary" : "ghost"}
-                    className="px-2"
-                  >
-                    Judge
-                  </Button>
-                </Link>
+              {user && user.role === "judge" && (
+                <>
+                  <Link to="/judge">
+                    <Button
+                      size="sm"
+                      variant={isActive("/judge") ? "secondary" : "ghost"}
+                      className="px-2"
+                    >
+                      Judge
+                    </Button>
+                  </Link>
+                </>
               )}
             </div>
           </div>
           <div className="flex items-center space-x-2">
             {user ? (
               <>
+                {/* Role Switcher */}
+                <div className="flex items-center space-x-2 border border-border rounded-md p-1 bg-muted/30">
+                  <button
+                    onClick={() => handleRoleSwitch("user")}
+                    className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                      user.role === "user"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Head
+                  </button>
+                  <button
+                    onClick={() => handleRoleSwitch("judge")}
+                    className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                      user.role === "judge"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Judge
+                  </button>
+                </div>
+
                 <span className="text-sm text-muted-foreground hidden md:block">
                   {user.name}
                 </span>

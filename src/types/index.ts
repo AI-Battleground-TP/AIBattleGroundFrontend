@@ -36,6 +36,8 @@ export interface Comparison {
   createdAt: Date;
 }
 
+export type LeaderboardCategory = "all" | "health" | "sports" | "mathematics" | "philosophy" | "religion";
+
 export interface LeaderboardEntry {
   id: string;
   modelName: string;
@@ -44,6 +46,7 @@ export interface LeaderboardEntry {
   winRate: number;
   avgResponseTime: number;
   totalVotes: number;
+  category?: LeaderboardCategory;
 }
 
 export interface JudgeLeaderboardEntry {
@@ -61,6 +64,7 @@ export interface JudgeLeaderboardEntry {
 export interface User {
   id: string;
   name: string;
+  email: string;
   role: "user" | "judge";
 }
 
@@ -138,6 +142,8 @@ export interface QuestionPool {
   createdAt: Date;
 }
 
+export type EvaluationOption = "A" | "B" | "tie" | "both-poor" | "dont-know";
+
 export interface Experiment {
   id: string;
   title: string;
@@ -147,6 +153,9 @@ export interface Experiment {
   createdAt: Date;
   status: "in-progress" | "completed";
   comparisons?: ExperimentComparison[];
+  // New fields
+  evaluationCriteria?: string; // Notes for judges on how to evaluate
+  customQuestions?: Question[]; // Optional additional questions
 }
 
 export interface ExperimentComparison {

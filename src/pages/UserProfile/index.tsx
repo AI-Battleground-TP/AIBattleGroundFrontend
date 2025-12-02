@@ -143,7 +143,7 @@ export const UserProfilePage: React.FC = () => {
               <p className="text-2xl font-bold text-primary">
                 {profile.totalComparisons}
               </p>
-              <p className="text-sm text-muted-foreground">Total Comparisons</p>
+              <p className="text-sm text-muted-foreground">Total Experiments</p>
             </div>
             <div>
               <p className="text-2xl font-bold text-primary">
@@ -181,7 +181,7 @@ export const UserProfilePage: React.FC = () => {
       <Card title="Saved Models">
         <div className="flex justify-between items-center mb-6">
           <p className="text-muted-foreground">
-            Manage your saved models for quick comparisons
+            Manage your saved models for quick experiments
           </p>
           <Button onClick={() => setShowAddModel(true)}>+ Add New Model</Button>
         </div>

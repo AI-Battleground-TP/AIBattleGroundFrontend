@@ -3,6 +3,7 @@ export { Login } from "./Login";
 export { Dashboard } from "./Dashboard";
 export { Judge } from "./Judge";
 export { Leaderboard } from "./Leaderboard";
+export { Guidelines } from "./Guidelines";
 export { UserProfilePage as UserProfile } from "./UserProfile";
 export { JudgeProfile } from "./JudgeProfile";
 export { Models } from "./Models";

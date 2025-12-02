@@ -158,7 +158,7 @@ export const QuestionPool: React.FC = () => {
         <div>
           <h1 className="text-3xl font-bold text-foreground">Question Pools</h1>
           <p className="text-muted-foreground mt-1">
-            Create and manage collections of questions for model comparisons
+            Create and manage collections of questions for model experiments
           </p>
         </div>
       </div>
@@ -166,7 +166,7 @@ export const QuestionPool: React.FC = () => {
       <div className="bg-muted/30 border border-border rounded-lg p-4">
         <p className="text-sm text-muted-foreground">
           <strong>💡 How it works:</strong> Create question pools that you can reuse
-          across different model comparisons. Add questions manually or upload them
+          across different model experiments. Add questions manually or upload them
           from a CSV file. Each question can optionally have a category.
         </p>
       </div>

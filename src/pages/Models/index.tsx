@@ -161,7 +161,7 @@ export const Models: React.FC = () => {
         <div>
           <h1 className="text-3xl font-bold text-foreground">Models</h1>
           <p className="text-muted-foreground mt-1">
-            Manage your AI models for comparisons
+            Manage your AI models for experiments
           </p>
         </div>
       </div>
@@ -169,7 +169,7 @@ export const Models: React.FC = () => {
       <div className="bg-muted/30 border border-border rounded-lg p-4">
         <p className="text-sm text-muted-foreground">
           <strong>💡 How it works:</strong> Add your AI models here with their API keys.
-          These models will be available for selection when creating comparisons in the Dashboard.
+          These models will be available for selection when creating experiments in the Dashboard.
           You can edit the name and API key of any model, but cannot delete models once added.
         </p>
       </div>

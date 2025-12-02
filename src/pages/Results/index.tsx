@@ -47,15 +47,15 @@ export const Results: React.FC = () => {
         <div>
           <h1 className="text-3xl font-bold text-foreground">Results</h1>
           <p className="text-muted-foreground mt-1">
-            View and track your model comparison experiments
+            View and track your model experiments
           </p>
         </div>
       </div>
 
       <div className="bg-muted/30 border border-border rounded-lg p-4">
         <p className="text-sm text-muted-foreground">
-          <strong>💡 About Results:</strong> This page shows all your comparison
-          experiments. Each experiment contains multiple pairwise comparisons between
+          <strong>💡 About Results:</strong> This page shows all your
+          experiments. Each experiment contains multiple pairwise evaluations between
           the models you selected. Expand any experiment to see detailed results from
           judge evaluations.
         </p>
@@ -69,7 +69,7 @@ export const Results: React.FC = () => {
             </div>
             <p className="text-lg font-medium">No experiments yet</p>
             <p className="mt-1">
-              Start a comparison from the Dashboard to see results here
+              Start an experiment from the Dashboard to see results here
             </p>
           </div>
         ) : (
@@ -128,8 +128,8 @@ export const Results: React.FC = () => {
                     </div>
 
                     <div className="mt-3 text-sm text-muted-foreground">
-                      <strong>Total Comparisons:</strong> {totalComparisons} pairwise
-                      comparison{totalComparisons !== 1 ? 's' : ''}
+                      <strong>Total Evaluations:</strong> {totalComparisons} pairwise
+                      evaluation{totalComparisons !== 1 ? 's' : ''}
                     </div>
                   </div>
 
@@ -160,7 +160,7 @@ export const Results: React.FC = () => {
                           >
                             <div className="flex items-center justify-between mb-4 pb-3 border-b border-primary/30">
                               <h4 className="text-lg font-semibold text-foreground">
-                                Comparison {pairIdx + 1}
+                                Evaluation {pairIdx + 1}
                               </h4>
                               <div className="flex items-center space-x-2">
                                 <div className="px-3 py-1 bg-primary/10 text-primary rounded-full text-sm font-medium">
@@ -284,7 +284,7 @@ export const Results: React.FC = () => {
                           Experiment Summary
                         </h4>
                         <p className="text-center text-sm text-muted-foreground">
-                          {totalComparisons} pairwise comparison
+                          {totalComparisons} pairwise evaluation
                           {totalComparisons !== 1 ? 's' : ''} completed between{' '}
                           {exp.selectedModels.length} models
                         </p>

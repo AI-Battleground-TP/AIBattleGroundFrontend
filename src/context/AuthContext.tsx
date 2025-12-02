@@ -4,8 +4,9 @@ import type { User } from "../types";
 
 interface AuthContextType {
   user: User | null;
-  login: (name: string, role: "user" | "judge") => void;
+  login: (email: string, password: string) => void;
   logout: () => void;
+  switchRole: (role: "user" | "judge") => void;
   isAuthenticated: boolean;
 }
 
@@ -16,13 +17,24 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
 }) => {
   const [user, setUser] = useState<User | null>(null);
 
-  const login = (name: string, role: "user" | "judge") => {
+  const login = (email: string, password: string) => {
+    // Demo login - no actual authentication
     const newUser: User = {
-      id: `${role}-${Date.now()}`,
-      name,
-      role,
+      id: `user-${Date.now()}`,
+      name: email, // Use email as name for display
+      email,
+      role: "user", // Default role is user
     };
     setUser(newUser);
+  };
+
+  const switchRole = (role: "user" | "judge") => {
+    if (user) {
+      setUser({
+        ...user,
+        role,
+      });
+    }
   };
 
   const logout = () => {
@@ -32,7 +44,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
   const isAuthenticated = user !== null;
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated }}>
+    <AuthContext.Provider value={{ user, login, logout, switchRole, isAuthenticated }}>
       {children}
     </AuthContext.Provider>
   );

@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Button, Input, Card, Toast, Textarea } from "../../components";
+import React, { useEffect, useState } from "react";
+import { Button, Input, Card, Toast, Textarea, Modal } from "../../components";
 import { Badge } from "../../components/ui/badge";
 import {
   Accordion,
@@ -22,7 +22,17 @@ import { parseQuestionsCSV, downloadQuestionsCSVTemplate } from "../../utils/csv
 import type { Question } from "../../types";
 
 export const QuestionPool: React.FC = () => {
-  const { questionPools, addQuestionPool, deleteQuestionPool } = useApp();
+  const {
+    questionPools,
+    loadQuestionPools,
+    addQuestionPool,
+    updateQuestionPool,
+    deleteQuestionPool,
+    addQuestionToPool,
+    deleteQuestionFromPool,
+    updateQuestionInPool,
+    getQuestionById,
+  } = useApp();
   
   // Form state
   const [poolName, setPoolName] = useState("");
@@ -39,6 +49,20 @@ export const QuestionPool: React.FC = () => {
   // View state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [poolToDelete, setPoolToDelete] = useState<string | null>(null);
+  const [editingPoolId, setEditingPoolId] = useState<string | null>(null);
+  const [editingPoolName, setEditingPoolName] = useState("");
+  const [poolQuestionDrafts, setPoolQuestionDrafts] = useState<
+    Record<string, { text: string; category: string }>
+  >({});
+  const [openAddQuestionPoolId, setOpenAddQuestionPoolId] = useState<string | null>(
+    null
+  );
+  const [editingQuestion, setEditingQuestion] = useState<{
+    poolId: string;
+    questionId: string;
+    text: string;
+    category: string;
+  } | null>(null);
 
   const handleAddQuestion = () => {
     if (!currentQuestion.trim()) {
@@ -83,7 +107,7 @@ export const QuestionPool: React.FC = () => {
     }
   };
 
-  const handleSavePool = () => {
+  const handleSavePool = async () => {
     if (!poolName.trim()) {
       setAlertMessage("Please enter a pool name");
       setShowAlertToast(true);
@@ -96,16 +120,25 @@ export const QuestionPool: React.FC = () => {
       return;
     }
 
-    addQuestionPool({
-      name: poolName,
-      questions: questions,
-    });
+    try {
+      await addQuestionPool({
+        name: poolName,
+        questions: questions,
+      });
 
-    // Reset form
-    setPoolName("");
-    setQuestions([]);
-    setToastMessage("Question pool created successfully!");
-    setShowToast(true);
+      // Reset form
+      setPoolName("");
+      setQuestions([]);
+      setToastMessage("Question pool created successfully!");
+      setShowToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error
+          ? error.message
+          : "Question pool could not be created."
+      );
+      setShowAlertToast(true);
+    }
   };
 
   const handleDeletePool = (id: string) => {
@@ -113,15 +146,165 @@ export const QuestionPool: React.FC = () => {
     setDeleteDialogOpen(true);
   };
 
-  const confirmDeletePool = () => {
+  const confirmDeletePool = async () => {
     if (poolToDelete) {
-      deleteQuestionPool(poolToDelete);
-      setToastMessage("Question pool deleted");
-      setShowToast(true);
-      setPoolToDelete(null);
-      setDeleteDialogOpen(false);
+      try {
+        await deleteQuestionPool(poolToDelete);
+        setToastMessage("Question pool deleted");
+        setShowToast(true);
+        setPoolToDelete(null);
+        setDeleteDialogOpen(false);
+      } catch (error) {
+        setAlertMessage(
+          error instanceof Error
+            ? error.message
+            : "Question pool could not be deleted."
+        );
+        setShowAlertToast(true);
+      }
     }
   };
+
+  const startRenamePool = (poolId: string, currentName: string) => {
+    setEditingPoolId(poolId);
+    setEditingPoolName(currentName);
+  };
+
+  const cancelRenamePool = () => {
+    setEditingPoolId(null);
+    setEditingPoolName("");
+  };
+
+  const saveRenamePool = async () => {
+    if (!editingPoolId) return;
+    if (!editingPoolName.trim()) {
+      setAlertMessage("Pool name cannot be empty.");
+      setShowAlertToast(true);
+      return;
+    }
+
+    try {
+      await updateQuestionPool(editingPoolId, { name: editingPoolName.trim() });
+      setToastMessage("Question pool updated");
+      setShowToast(true);
+      cancelRenamePool();
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Question pool could not be updated."
+      );
+      setShowAlertToast(true);
+    }
+  };
+
+  const updateDraft = (poolId: string, updates: Partial<{ text: string; category: string }>) => {
+    setPoolQuestionDrafts((prev) => ({
+      ...prev,
+      [poolId]: {
+        text: prev[poolId]?.text || "",
+        category: prev[poolId]?.category || "",
+        ...updates,
+      },
+    }));
+  };
+
+  const handleAddQuestionToExistingPool = async (poolId: string) => {
+    const draft = poolQuestionDrafts[poolId];
+    if (!draft?.text?.trim()) {
+      setAlertMessage("Please enter a question to add.");
+      setShowAlertToast(true);
+      return;
+    }
+
+    try {
+      await addQuestionToPool(poolId, {
+        text: draft.text.trim(),
+        category: draft.category.trim() || undefined,
+      });
+      setPoolQuestionDrafts((prev) => ({
+        ...prev,
+        [poolId]: { text: "", category: "" },
+      }));
+      setToastMessage("Question added");
+      setShowToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Question could not be added."
+      );
+      setShowAlertToast(true);
+    }
+  };
+
+  const handleDeleteQuestionFromExistingPool = async (
+    poolId: string,
+    questionId: string
+  ) => {
+    try {
+      await deleteQuestionFromPool(poolId, questionId);
+      setToastMessage("Question deleted");
+      setShowToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Question could not be deleted."
+      );
+      setShowAlertToast(true);
+    }
+  };
+
+  const handleOpenQuestionEdit = async (poolId: string, questionId: string) => {
+    try {
+      const question = await getQuestionById(questionId);
+      setEditingQuestion({
+        poolId,
+        questionId,
+        text: question.text,
+        category: question.category || "",
+      });
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Question detail could not be loaded."
+      );
+      setShowAlertToast(true);
+    }
+  };
+
+  const handleSaveQuestionEdit = async () => {
+    if (!editingQuestion) return;
+    if (!editingQuestion.text.trim()) {
+      setAlertMessage("Question text cannot be empty.");
+      setShowAlertToast(true);
+      return;
+    }
+
+    try {
+      await updateQuestionInPool(
+        editingQuestion.poolId,
+        editingQuestion.questionId,
+        {
+          text: editingQuestion.text.trim(),
+          category: editingQuestion.category.trim() || undefined,
+        }
+      );
+      setEditingQuestion(null);
+      setToastMessage("Question updated");
+      setShowToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Question could not be updated."
+      );
+      setShowAlertToast(true);
+    }
+  };
+
+  useEffect(() => {
+    loadQuestionPools().catch((error) => {
+      setAlertMessage(
+        error instanceof Error
+          ? error.message
+          : "Question pools could not be loaded."
+      );
+      setShowAlertToast(true);
+    });
+  }, []);
 
   return (
     <div className="space-y-8">
@@ -139,6 +322,43 @@ export const QuestionPool: React.FC = () => {
           onClose={() => setShowAlertToast(false)}
         />
       )}
+
+      {editingQuestion && (
+        <Modal
+          isOpen={!!editingQuestion}
+          onClose={() => setEditingQuestion(null)}
+          title="Edit Question"
+        >
+          <div className="space-y-3">
+            <Textarea
+              label="Question Text"
+              value={editingQuestion.text}
+              onChange={(e) =>
+                setEditingQuestion((prev) =>
+                  prev ? { ...prev, text: e.target.value } : prev
+                )
+              }
+              rows={3}
+            />
+            <Input
+              label="Category (Optional)"
+              value={editingQuestion.category}
+              onChange={(e) =>
+                setEditingQuestion((prev) =>
+                  prev ? { ...prev, category: e.target.value } : prev
+                )
+              }
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setEditingQuestion(null)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveQuestionEdit}>Save</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -322,9 +542,36 @@ export const QuestionPool: React.FC = () => {
                     <div className="flex-1">
                       <AccordionTrigger className="hover:no-underline">
                         <div className="text-left">
-                          <h3 className="text-lg font-semibold text-foreground mb-1">
-                            {pool.name}
-                          </h3>
+                          {editingPoolId === pool.id ? (
+                            <div className="space-y-2">
+                              <Input
+                                value={editingPoolName}
+                                onChange={(e) => setEditingPoolName(e.target.value)}
+                                placeholder="Pool name"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  onClick={saveRenamePool}
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={cancelRenamePool}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <h3 className="text-lg font-semibold text-foreground mb-1">
+                              {pool.name}
+                            </h3>
+                          )}
                           <p className="text-sm text-muted-foreground">
                             {pool.questions.length} question{pool.questions.length !== 1 ? 's' : ''}
                             {" • "}
@@ -334,6 +581,24 @@ export const QuestionPool: React.FC = () => {
                       </AccordionTrigger>
                     </div>
                     <div className="flex space-x-2 ml-4">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setOpenAddQuestionPoolId((prev) =>
+                            prev === pool.id ? null : pool.id
+                          )
+                        }
+                      >
+                        Add Question
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => startRenamePool(pool.id, pool.name)}
+                      >
+                        Rename
+                      </Button>
                       <Button
                         variant="danger"
                         size="sm"
@@ -345,7 +610,40 @@ export const QuestionPool: React.FC = () => {
                   </div>
                 </div>
                 <AccordionContent className="p-4">
-                  <div className="space-y-2">
+                  <div className="space-y-4">
+                    {openAddQuestionPoolId === pool.id && (
+                      <div className="border border-border rounded-lg p-3 bg-muted/20">
+                        <p className="text-sm font-medium text-foreground mb-2">
+                          Add Question To This Pool
+                        </p>
+                        <div className="space-y-2">
+                          <Textarea
+                            placeholder="Enter question text"
+                            value={poolQuestionDrafts[pool.id]?.text || ""}
+                            onChange={(e) =>
+                              updateDraft(pool.id, { text: e.target.value })
+                            }
+                            rows={2}
+                          />
+                          <Input
+                            placeholder="Category (optional)"
+                            value={poolQuestionDrafts[pool.id]?.category || ""}
+                            onChange={(e) =>
+                              updateDraft(pool.id, { category: e.target.value })
+                            }
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleAddQuestionToExistingPool(pool.id)}
+                          >
+                            Add
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-2">
                     {pool.questions.map((q, idx) => (
                       <div
                         key={q.id}
@@ -355,7 +653,7 @@ export const QuestionPool: React.FC = () => {
                           <span className="text-sm font-semibold text-muted-foreground">
                             {idx + 1}.
                           </span>
-                          <div>
+                          <div className="flex-1">
                             <p className="text-sm text-foreground">{q.text}</p>
                             {q.category && (
                               <Badge variant="secondary" className="mt-1">
@@ -363,9 +661,28 @@ export const QuestionPool: React.FC = () => {
                               </Badge>
                             )}
                           </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleOpenQuestionEdit(pool.id, q.id)}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="danger"
+                            size="sm"
+                            onClick={() =>
+                              handleDeleteQuestionFromExistingPool(pool.id, q.id)
+                            }
+                          >
+                            Delete
+                          </Button>
                         </div>
                       </div>
                     ))}
+                    </div>
                   </div>
                 </AccordionContent>
               </AccordionItem>

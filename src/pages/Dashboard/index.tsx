@@ -1,24 +1,35 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, Card, Toast, Textarea } from "../../components";
-import { Checkbox } from "../../components/ui/checkbox";
-import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
-import { Badge } from "../../components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "../../components/ui/dropdown-menu";
 import { Alert, AlertDescription } from "../../components/ui/alert";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
-import { Info, Loader2 } from "lucide-react";
+import { ChevronDown, Info, Loader2 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
+import { cn } from "@/lib/utils";
 import type { Question } from "../../types";
 
 export const Dashboard: React.FC = () => {
-  const { models, questionPools, addExperiment } = useApp();
+  const { models, questionPools, addExperiment, loadModels, loadQuestionPools } = useApp();
   
   // Form state
   const [experimentTitle, setExperimentTitle] = useState("");
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [selectedPoolId, setSelectedPoolId] = useState("");
   const [evaluationCriteria, setEvaluationCriteria] = useState("");
-  const [customQuestionCount, setCustomQuestionCount] = useState<number>(0);
-  const [customQuestions, setCustomQuestions] = useState<string[]>([]);
+  const [customQuestions, setCustomQuestions] = useState<string[]>([""]);
   const [showToast, setShowToast] = useState(false);
   const [showAlertToast, setShowAlertToast] = useState(false);
   const [alertMessage, setAlertMessage] = useState("");
@@ -53,71 +64,101 @@ export const Dashboard: React.FC = () => {
       return;
     }
 
-    setIsSubmitting(true);
-
-    // Simulate API call delay
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    const selectedModels = models.filter(m => selectedModelIds.includes(m.id));
-    const selectedPool = questionPools.find(p => p.id === selectedPoolId);
-
-    if (!selectedPool) {
-      setAlertMessage("Selected question pool not found");
+    if (!evaluationCriteria.trim()) {
+      setAlertMessage("Please provide evaluation criteria");
       setShowAlertToast(true);
-      setIsSubmitting(false);
       return;
     }
 
-    // Convert custom questions strings to Question objects
-    const customQuestionObjects: Question[] = customQuestions
-      .filter(q => q.trim())
-      .map((text, index) => ({
-        id: `custom-q-${Date.now()}-${index}`,
-        text: text.trim(),
-      }));
+    if (customQuestions.filter((question) => question.trim()).length === 0) {
+      setAlertMessage("Please add at least one additional question");
+      setShowAlertToast(true);
+      return;
+    }
 
-    addExperiment({
-      title: experimentTitle,
-      questionPoolId: selectedPool.id,
-      questionPoolName: selectedPool.name,
-      selectedModels: selectedModels,
-      status: "in-progress",
-      evaluationCriteria: evaluationCriteria.trim() || undefined,
-      customQuestions: customQuestionObjects.length > 0 ? customQuestionObjects : undefined,
-    });
+    setIsSubmitting(true);
+    try {
+      const selectedModels = models.filter(m => selectedModelIds.includes(m.id));
+      const selectedPool = questionPools.find(p => p.id === selectedPoolId);
 
-    // Reset form
-    setExperimentTitle("");
-    setSelectedModelIds([]);
-    setSelectedPoolId("");
-    setEvaluationCriteria("");
-    setCustomQuestionCount(0);
-    setCustomQuestions([]);
-    setShowToast(true);
-    setIsSubmitting(false);
+      if (!selectedPool) {
+        setAlertMessage("Selected question pool not found");
+        setShowAlertToast(true);
+        return;
+      }
+
+      // Convert custom questions strings to Question objects
+      const customQuestionObjects: Question[] = customQuestions
+        .filter(q => q.trim())
+        .map((text, index) => ({
+          id: `custom-q-${Date.now()}-${index}`,
+          text: text.trim(),
+        }));
+
+      await addExperiment({
+        title: experimentTitle,
+        questionPoolId: selectedPool.id,
+        questionPoolName: selectedPool.name,
+        selectedModels: selectedModels,
+        status: "in-progress",
+        evaluationCriteria: evaluationCriteria.trim() || undefined,
+        customQuestions: customQuestionObjects.length > 0 ? customQuestionObjects : undefined,
+      });
+
+      // Reset form
+      setExperimentTitle("");
+      setSelectedModelIds([]);
+      setSelectedPoolId("");
+      setEvaluationCriteria("");
+      setCustomQuestions([""]);
+      setShowToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error
+          ? error.message
+          : "Experiment could not be started."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const selectedPool = questionPools.find(p => p.id === selectedPoolId);
 
-  const handleCustomQuestionCountChange = (count: number) => {
-    setCustomQuestionCount(count);
-    // Resize the array to match the count
-    const newQuestions = [...customQuestions];
-    if (count > customQuestions.length) {
-      // Add empty strings for new questions
-      newQuestions.push(...Array(count - customQuestions.length).fill(""));
-    } else {
-      // Remove excess questions
-      newQuestions.splice(count);
+  const modelsDropdownLabel = useMemo(() => {
+    if (selectedModelIds.length === 0) {
+      return "-- Select models --";
     }
-    setCustomQuestions(newQuestions);
-  };
+    const selected = models.filter((m) => selectedModelIds.includes(m.id));
+    const lines = selected.map((m) => `${m.provider} - ${m.name}`);
+    if (lines.length <= 2) {
+      return lines.join(", ");
+    }
+    return `${selectedModelIds.length} models selected`;
+  }, [models, selectedModelIds]);
 
   const handleCustomQuestionChange = (index: number, value: string) => {
     const newQuestions = [...customQuestions];
     newQuestions[index] = value;
     setCustomQuestions(newQuestions);
   };
+
+  const handleAddCustomQuestion = () => {
+    setCustomQuestions((prev) => [...prev, ""]);
+  };
+
+  const handleRemoveCustomQuestion = (index: number) => {
+    if (customQuestions.length <= 1) {
+      return;
+    }
+    setCustomQuestions((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  useEffect(() => {
+    loadModels().catch(() => undefined);
+    loadQuestionPools().catch(() => undefined);
+  }, []);
 
   return (
     <div className="space-y-8">
@@ -193,10 +234,10 @@ export const Dashboard: React.FC = () => {
 
           {/* Model Selection */}
           <div className="border-t-2 border-border pt-6">
-            <label className="block text-lg font-semibold text-foreground mb-3">
+            <label className="block text-sm font-medium text-foreground mb-1">
               Select Models (Choose at least 2)
             </label>
-            
+
             {models.length === 0 ? (
               <div className="bg-accent/20 border border-accent/30 rounded-lg p-4">
                 <p className="text-sm text-accent-foreground">
@@ -205,35 +246,47 @@ export const Dashboard: React.FC = () => {
                 </p>
               </div>
             ) : (
-              <div className="space-y-2">
-                {models.map((model) => (
-                  <label
-                    key={model.id}
-                    className={`flex items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                      selectedModelIds.includes(model.id)
-                        ? "border-primary bg-primary/10"
-                        : "border-border hover:border-primary/50"
-                    }`}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild disabled={isSubmitting}>
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background",
+                      "placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+                      "disabled:cursor-not-allowed disabled:opacity-50"
+                    )}
                   >
-                    <Checkbox
+                    <span
+                      className={cn(
+                        "truncate text-left",
+                        selectedModelIds.length === 0 && "text-muted-foreground"
+                      )}
+                    >
+                      {modelsDropdownLabel}
+                    </span>
+                    <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  className="max-h-96 min-w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto z-[100]"
+                >
+                  <DropdownMenuLabel className="font-normal text-muted-foreground">
+                    Choose at least 2 models
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {models.map((model) => (
+                    <DropdownMenuCheckboxItem
+                      key={model.id}
                       checked={selectedModelIds.includes(model.id)}
                       onCheckedChange={() => handleModelToggle(model.id)}
-                      disabled={isSubmitting}
-                      className="mr-3"
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-2">
-                        <span className="font-semibold text-foreground">
-                          {model.name}
-                        </span>
-                        <Badge variant="outline">
-                          {model.provider}
-                        </Badge>
-                      </div>
-                    </div>
-                  </label>
-                ))}
-              </div>
+                      onSelect={(e) => e.preventDefault()}
+                    >
+                      {`${model.provider} - ${model.name}`}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
 
             {selectedModelIds.length > 0 && (
@@ -251,7 +304,7 @@ export const Dashboard: React.FC = () => {
 
           {/* Question Pool Selection */}
           <div className="border-t-2 border-border pt-6">
-            <label className="block text-lg font-semibold text-foreground mb-3">
+            <label className="block text-sm font-medium text-foreground mb-1">
               Select Question Pool
             </label>
 
@@ -263,38 +316,27 @@ export const Dashboard: React.FC = () => {
                 </p>
               </div>
             ) : (
-              <RadioGroup
-                value={selectedPoolId}
+              <Select
+                value={selectedPoolId || undefined}
                 onValueChange={(value) => setSelectedPoolId(value)}
                 disabled={isSubmitting}
-                className="space-y-2"
               >
-                {questionPools.map((pool) => (
-                  <label
-                    key={pool.id}
-                    className={`flex items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                      selectedPoolId === pool.id
-                        ? "border-primary bg-primary/10"
-                        : "border-border hover:border-primary/50"
-                    }`}
-                  >
-                    <RadioGroupItem
-                      value={pool.id}
-                      className="mr-3"
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-foreground">
-                          {pool.name}
-                        </span>
-                        <span className="text-sm text-muted-foreground">
-                          {pool.questions.length} question{pool.questions.length !== 1 ? 's' : ''}
-                        </span>
-                      </div>
-                    </div>
-                  </label>
-                ))}
-              </RadioGroup>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="-- Select a question pool --" />
+                </SelectTrigger>
+                <SelectContent className="max-h-96 z-[100]">
+                  {questionPools.map((pool) => (
+                    <SelectItem key={pool.id} value={pool.id}>
+                      {pool.name}
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {pool.questions.length} question
+                        {pool.questions.length !== 1 ? "s" : ""}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
 
             {selectedPool && (
@@ -326,10 +368,10 @@ export const Dashboard: React.FC = () => {
           {/* Evaluation Criteria */}
           <div className="border-t-2 border-border pt-6">
             <label className="block text-lg font-semibold text-foreground mb-3">
-              Evaluation Criteria (Optional)
+              Evaluation Criteria
             </label>
             <p className="text-sm text-muted-foreground mb-3">
-              Provide guidance for judges on how to evaluate the models. For example: "Select the model that demonstrates better accuracy" or "Choose the response that is more helpful and truthful".
+              Provide guidance for judges on how to evaluate the models. For example: "Please do not select responses that generate NSFW content." or "Please prefer models that provide shorter and more concise responses when making your selections."
             </p>
             <Textarea
               placeholder="e.g., Select the model that demonstrates better accuracy in its responses"
@@ -337,52 +379,56 @@ export const Dashboard: React.FC = () => {
               onChange={(e) => setEvaluationCriteria(e.target.value)}
               rows={3}
               disabled={isSubmitting}
+              required
             />
           </div>
 
           {/* Custom Questions */}
           <div className="border-t-2 border-border pt-6">
             <label className="block text-lg font-semibold text-foreground mb-3">
-              Additional Questions (Optional)
+              Additional Questions
             </label>
             <p className="text-sm text-muted-foreground mb-3">
-              Add custom questions that will be included in this experiment in addition to the selected question pool.
+              Add at least one custom question that will be included in this experiment.
             </p>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-foreground mb-2">
-                How many additional questions?
-              </label>
-              <Select
-                value={customQuestionCount.toString()}
-                onValueChange={(value) => handleCustomQuestionCountChange(parseInt(value))}
-                disabled={isSubmitting}
-              >
-                <SelectTrigger className="w-[200px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-                    <SelectItem key={num} value={num.toString()}>
-                      {num === 0 ? "None" : `${num} question${num !== 1 ? "s" : ""}`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {customQuestionCount > 0 && (
-              <div className="space-y-3">
-                {Array.from({ length: customQuestionCount }).map((_, index) => (
+            <div className="space-y-3">
+              {customQuestions.map((question, index) => (
+                <div key={index} className="space-y-2">
                   <Input
-                    key={index}
                     label={`Question ${index + 1}`}
-                    placeholder={`Enter question ${index + 1}...`}
-                    value={customQuestions[index] || ""}
+                    placeholder={
+                      index === 0
+                        ? "e.g., Select the Better Response"
+                        : `Enter question ${index + 1}...`
+                    }
+                    value={question}
                     onChange={(e) => handleCustomQuestionChange(index, e.target.value)}
                     disabled={isSubmitting}
+                    required={index === 0}
                   />
-                ))}
-              </div>
-            )}
+                  {customQuestions.length > 1 && (
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      onClick={() => handleRemoveCustomQuestion(index)}
+                      disabled={isSubmitting}
+                    >
+                      Remove Question
+                    </Button>
+                  )}
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleAddCustomQuestion}
+                disabled={isSubmitting}
+              >
+                Add Question
+              </Button>
+            </div>
           </div>
 
           <Button
@@ -393,6 +439,8 @@ export const Dashboard: React.FC = () => {
               isSubmitting ||
               selectedModelIds.length < 2 ||
               !selectedPoolId ||
+              !evaluationCriteria.trim() ||
+              customQuestions.filter((question) => question.trim()).length === 0 ||
               models.length === 0 ||
               questionPools.length === 0
             }

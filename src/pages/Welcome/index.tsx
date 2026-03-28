@@ -63,7 +63,7 @@ export const Welcome: React.FC = () => {
         <div className="flex justify-center space-x-4">
           {!user ? (
             <>
-              <Link to="/login">
+              <Link to="/signup">
                 <Button size="lg">Get Started</Button>
               </Link>
               <Link to="/leaderboard">

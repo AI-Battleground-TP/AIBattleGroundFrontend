@@ -13,15 +13,40 @@ import {
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Button as ShadcnButton } from "./ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 import { User, MoreVertical } from "lucide-react";
 
 export const Navbar: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout, switchRole } = useAuth();
+  const {
+    user,
+    organizations,
+    logout,
+    switchRole,
+    switchOrganization,
+    isSwitchingOrganization,
+  } = useAuth();
   const [activeModal, setActiveModal] = useState<
     "about" | "howItWorks" | "help" | null
   >(null);
+  const [isSwitchDialogOpen, setIsSwitchDialogOpen] = useState(false);
+  const [pendingOrganizationId, setPendingOrganizationId] = useState("");
+  const [switchOrgError, setSwitchOrgError] = useState("");
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -33,6 +58,12 @@ export const Navbar: React.FC = () => {
 
   const handleLogout = () => {
     logout();
+  };
+
+  const openSwitchOrganizationDialog = () => {
+    setPendingOrganizationId(user?.organizationId || organizations[0]?.id || "");
+    setSwitchOrgError("");
+    setIsSwitchDialogOpen(true);
   };
 
   const handleRoleSwitch = (newRole: "user" | "judge") => {
@@ -47,11 +78,31 @@ export const Navbar: React.FC = () => {
     }
   };
 
+  const handleSwitchOrganization = async () => {
+    if (!pendingOrganizationId) {
+      setSwitchOrgError("Lutfen bir organization sec.");
+      return;
+    }
+
+    try {
+      const nextUser = await switchOrganization(pendingOrganizationId);
+      setIsSwitchDialogOpen(false);
+      setSwitchOrgError("");
+      navigate(nextUser.role === "judge" ? "/judge" : "/dashboard");
+    } catch (error) {
+      setSwitchOrgError(
+        error instanceof Error
+          ? error.message
+          : "Organization degistirme basarisiz."
+      );
+    }
+  };
+
   return (
     <nav className="bg-background border-b relative z-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center h-14">
-          <div className="flex items-center">
+      <div className="w-full px-4 sm:px-6 lg:px-8">
+        <div className="flex w-full min-w-0 justify-between items-center h-14 gap-4">
+          <div className="flex min-w-0 items-center justify-start">
             <Link to="/" className="flex items-center space-x-1 mr-6">
               <img
                 src="/logo_yazisiz.png"
@@ -138,32 +189,43 @@ export const Navbar: React.FC = () => {
               )}
             </div>
           </div>
-          <div className="flex items-center space-x-2">
+          <div className="flex flex-shrink-0 items-center justify-end space-x-2">
             {user ? (
               <>
-                {/* Role Switcher */}
-                <div className="flex items-center space-x-2 border border-border rounded-md p-1 bg-muted/30">
-                  <button
-                    onClick={() => handleRoleSwitch("user")}
-                    className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                      user.role === "user"
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Head
-                  </button>
-                  <button
-                    onClick={() => handleRoleSwitch("judge")}
-                    className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                      user.role === "judge"
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    Judge
-                  </button>
-                </div>
+                {/* Role Switcher (HEAD only) */}
+                {user.isHead && (
+                  <div className="flex items-center space-x-2 border border-border rounded-md p-1 bg-muted/30">
+                    <button
+                      onClick={() => handleRoleSwitch("user")}
+                      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                        user.role === "user"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Head
+                    </button>
+                    <button
+                      onClick={() => handleRoleSwitch("judge")}
+                      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                        user.role === "judge"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Judge
+                    </button>
+                  </div>
+                )}
+
+                <ShadcnButton
+                  variant="outline"
+                  size="sm"
+                  onClick={openSwitchOrganizationDialog}
+                  disabled={organizations.length === 0}
+                >
+                  Switch Organization
+                </ShadcnButton>
 
                 <span className="text-sm text-muted-foreground hidden md:block">
                   {user.name}
@@ -212,13 +274,76 @@ export const Navbar: React.FC = () => {
                 </DropdownMenu>
               </>
             ) : (
-              <Link to="/login">
-                <Button size="sm">Login</Button>
-              </Link>
+              <>
+                <Link to="/login">
+                  <Button size="sm" variant="outline">
+                    Login
+                  </Button>
+                </Link>
+                <Link to="/signup">
+                  <Button size="sm">Sign Up</Button>
+                </Link>
+              </>
             )}
           </div>
         </div>
       </div>
+
+      <Dialog open={isSwitchDialogOpen} onOpenChange={setIsSwitchDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Switch Organization</DialogTitle>
+            <DialogDescription>
+              Aktif organization degistirildiginde yeni org token'i kullanilacak.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <Select
+              value={pendingOrganizationId}
+              onValueChange={(value) => {
+                setPendingOrganizationId(value);
+                setSwitchOrgError("");
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select an organization" />
+              </SelectTrigger>
+              <SelectContent>
+                {organizations.map((organization) => (
+                  <SelectItem key={organization.id} value={organization.id}>
+                    {organization.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {switchOrgError && (
+              <p className="text-sm text-destructive">{switchOrgError}</p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <ShadcnButton
+              variant="outline"
+              onClick={() => setIsSwitchDialogOpen(false)}
+              disabled={isSwitchingOrganization}
+            >
+              Cancel
+            </ShadcnButton>
+            <ShadcnButton
+              onClick={handleSwitchOrganization}
+              disabled={
+                isSwitchingOrganization ||
+                !pendingOrganizationId ||
+                pendingOrganizationId === user?.organizationId
+              }
+            >
+              {isSwitchingOrganization ? "Switching..." : "Switch"}
+            </ShadcnButton>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* About Us Modal */}
       <Modal

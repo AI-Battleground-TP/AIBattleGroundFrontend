@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Button, Input, Card, Toast, Modal } from "../../components";
 import {
   Select,
@@ -26,7 +26,7 @@ const AVAILABLE_MODELS = [
 ];
 
 export const Models: React.FC = () => {
-  const { models, addModel, updateModel } = useApp();
+  const { models, addModel, updateModel, loadModels } = useApp();
   
   // Form state for adding new model
   const [selectedModelIndex, setSelectedModelIndex] = useState("");
@@ -53,7 +53,6 @@ export const Models: React.FC = () => {
     }
 
     const selectedModel = AVAILABLE_MODELS[parseInt(selectedModelIndex)];
-    
     addModel({
       name: selectedModel.name,
       provider: selectedModel.provider,
@@ -63,7 +62,7 @@ export const Models: React.FC = () => {
     // Reset form
     setSelectedModelIndex("");
     setApiKey("");
-    
+
     setToastMessage("Model added successfully!");
     setShowToast(true);
   };
@@ -98,6 +97,15 @@ export const Models: React.FC = () => {
     setEditName("");
     setEditApiKey("");
   };
+
+  useEffect(() => {
+    loadModels().catch((error) => {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Models could not be loaded."
+      );
+      setShowAlertToast(true);
+    });
+  }, []);
 
   return (
     <div className="space-y-8">
@@ -241,7 +249,9 @@ export const Models: React.FC = () => {
                       </p>
                       <p>
                         <strong>Added:</strong>{" "}
-                        {new Date(model.createdAt).toLocaleDateString()}
+                        {model.createdAt
+                          ? new Date(model.createdAt).toLocaleDateString()
+                          : "-"}
                       </p>
                     </div>
                   </div>

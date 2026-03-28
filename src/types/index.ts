@@ -66,6 +66,9 @@ export interface User {
   name: string;
   email: string;
   role: "user" | "judge";
+  isHead?: boolean;
+  organizationId?: string;
+  organizationName?: string;
 }
 
 export interface Judge extends User {
@@ -126,7 +129,9 @@ export interface ModelPoolItem {
   name: string;
   provider: string;
   apiKey: string;
-  createdAt: Date;
+  createdAt?: Date;
+  modelString?: string;
+  isActive?: boolean;
 }
 
 export interface Question {

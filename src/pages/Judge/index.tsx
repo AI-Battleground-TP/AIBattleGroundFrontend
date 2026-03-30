@@ -1,194 +1,273 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Button, Card, Toast, Textarea } from "../../components";
 import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
-import { Progress } from "../../components/ui/progress";
 import { Alert, AlertDescription } from "../../components/ui/alert";
-import { Info } from "lucide-react";
-import { dummyComparisons } from "../../utils/dummyData";
-// TODO: Connect to actual experiments from AppContext when experiment-to-pair mapping is implemented
-// import { useApp } from "../../context/AppContext";
-import type { ModelPair, EvaluationOption } from "../../types";
+import { Info, Loader2 } from "lucide-react";
+import { useAuth } from "../../context/AuthContext";
+import {
+  createPreference,
+  drawBlindTest,
+  getActiveExperiments,
+  getActiveJudgeExperiments,
+  getEvaluationQuestionsByExperiment,
+  type BackendDrawBlindTestResponse,
+  type BackendEvaluationQuestion,
+  type BackendExperiment,
+} from "../../lib/authApi";
+import type { EvaluationOption } from "../../types";
 
-// Dummy experiment pairs for judges to evaluate
-const dummyComparisonPairs: ModelPair[] = [
-  {
-    id: "pair-1",
-    title: "GPT-4 vs Claude 3 - Creative Writing",
-    purpose:
-      "Select the model that demonstrates better creative writing skills and engaging storytelling",
-    model1: {
-      id: "1",
-      name: "Model A",
-      provider: "Hidden",
-      apiKey: "***",
-      userId: "user1",
-      createdAt: new Date("2024-01-15"),
-      status: "evaluating",
-    },
-    model2: {
-      id: "2",
-      name: "Model B",
-      provider: "Hidden",
-      apiKey: "***",
-      userId: "user2",
-      createdAt: new Date("2024-01-15"),
-      status: "evaluating",
-    },
-    prompts: [
-      "Explain quantum computing in simple terms",
-      "Write a short poem about artificial intelligence",
-    ],
-    createdAt: new Date("2024-01-15"),
-    status: "in-progress",
-    totalEvaluations: 2,
-    completedEvaluations: 0,
-  },
-  {
-    id: "pair-2",
-    title: "Gemini vs GPT-4 - Technical Analysis",
-    purpose:
-      "Select the model that provides shorter and more accurate technical answers",
-    model1: {
-      id: "3",
-      name: "Model A",
-      provider: "Hidden",
-      apiKey: "***",
-      userId: "user3",
-      createdAt: new Date("2024-01-16"),
-      status: "evaluating",
-    },
-    model2: {
-      id: "4",
-      name: "Model B",
-      provider: "Hidden",
-      apiKey: "***",
-      userId: "user4",
-      createdAt: new Date("2024-01-16"),
-      status: "evaluating",
-    },
-    prompts: [
-      "What are the benefits of renewable energy?",
-      "Describe the process of photosynthesis",
-    ],
-    createdAt: new Date("2024-01-16"),
-    status: "pending",
-    totalEvaluations: 2,
-    completedEvaluations: 0,
-  },
-];
+type TestSelections = Record<string, EvaluationOption>;
+type SavedEvaluation = Record<string, TestSelections>;
+type FeedbackEntry = { commentA: string; commentB: string };
 
 export const Judge: React.FC = () => {
-  // TODO: Connect to actual experiments from AppContext when experiment-to-pair mapping is implemented
-  // const { experiments } = useApp();
-  const [comparisonPairs] = useState<ModelPair[]>(dummyComparisonPairs);
-  const [selectedPairId, setSelectedPairId] = useState<string | null>(null);
-  const [currentPromptIndex, setCurrentPromptIndex] = useState(0);
-  const [selectedWinner, setSelectedWinner] = useState<
-    "A" | "B" | "tie" | "both-poor" | "dont-know" | null
-  >(null);
+  const { user } = useAuth();
+  const [backendExperiments, setBackendExperiments] = useState<BackendExperiment[]>([]);
+  const [isLoadingExperiments, setIsLoadingExperiments] = useState(true);
+  const [isLoadingBlindTest, setIsLoadingBlindTest] = useState(false);
+  const [isSavingPreference, setIsSavingPreference] = useState(false);
+  const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(null);
+  const [currentBlindTest, setCurrentBlindTest] = useState<BackendDrawBlindTestResponse | null>(null);
+  const [evaluationQuestions, setEvaluationQuestions] = useState<BackendEvaluationQuestion[]>([]);
+  const [draftSelections, setDraftSelections] = useState<SavedEvaluation>({});
   const [showToast, setShowToast] = useState(false);
+  const [showSaveToast, setShowSaveToast] = useState(false);
   const [showAlertToast, setShowAlertToast] = useState(false);
   const [alertMessage, setAlertMessage] = useState("");
-  const [evaluations, setEvaluations] = useState<
-    Record<string, Record<number, "A" | "B" | "tie" | "both-poor" | "dont-know">>
-  >({});
-  const [feedback, setFeedback] = useState<
-    Record<
-      string,
-      Record<
-        number,
-        {
-          commentA: string;
-          commentB: string;
-        }
-      >
-    >
+  const [evaluations, setEvaluations] = useState<SavedEvaluation>({});
+  const [feedback, setFeedback] = useState<Record<string, FeedbackEntry>>({});
+  const [drawnTestsByExperiment, setDrawnTestsByExperiment] = useState<
+    Record<string, BackendDrawBlindTestResponse[]>
   >({});
 
-  const selectedPair = comparisonPairs.find((p) => p.id === selectedPairId);
-  
-  // All evaluation options are always available
+  const selectedExperiment = useMemo(
+    () => backendExperiments.find((experiment) => experiment.id === selectedExperimentId) || null,
+    [backendExperiments, selectedExperimentId]
+  );
+
   const availableOptions: EvaluationOption[] = ["A", "B", "tie", "both-poor", "dont-know"];
-  const evaluationCriteria = selectedPair?.purpose;
-  
-  const currentPrompt = selectedPair?.prompts[currentPromptIndex];
-  const currentFeedback =
-    (selectedPairId &&
-      feedback[selectedPairId] &&
-      feedback[selectedPairId][currentPromptIndex]) || undefined;
+  const currentTestId = currentBlindTest?.test.id ?? null;
+  const currentFeedback = currentTestId ? feedback[currentTestId] : undefined;
+  const savedSelectionsForCurrentTest = currentTestId ? evaluations[currentTestId] || {} : {};
+  const draftSelectionsForCurrentTest = currentTestId ? draftSelections[currentTestId] || {} : {};
+  const isCurrentTestSaved =
+    currentTestId !== null &&
+    evaluationQuestions.length > 0 &&
+    evaluationQuestions.every(
+      (question) => savedSelectionsForCurrentTest[question.id] !== undefined
+    );
+  const sessionDrawsForExperiment =
+    (selectedExperimentId && drawnTestsByExperiment[selectedExperimentId]) || [];
+  const sessionSavedCount = sessionDrawsForExperiment.filter(
+    (draw) => {
+      const savedSelections = evaluations[draw.test.id] || {};
+      return (
+        evaluationQuestions.length > 0 &&
+        evaluationQuestions.every(
+          (question) => savedSelections[question.id] !== undefined
+        )
+      );
+    }
+  ).length;
 
-  const handleFeedbackChange = (
-    model: "A" | "B",
-    value: string
-  ) => {
-    if (!selectedPairId) return;
+  const getAccessToken = () => {
+    const accessToken = localStorage.getItem("bt_access_token");
+    if (!accessToken) {
+      throw new Error("Missing access token.");
+    }
+    return accessToken;
+  };
+
+  const handleFeedbackChange = (model: "A" | "B", value: string) => {
+    if (!currentTestId || isCurrentTestSaved) {
+      return;
+    }
 
     setFeedback((prev) => ({
       ...prev,
-      [selectedPairId]: {
-        ...(prev[selectedPairId] || {}),
-        [currentPromptIndex]: {
-          commentA:
-            model === "A"
-              ? value
-              : prev[selectedPairId]?.[currentPromptIndex]?.commentA || "",
-          commentB:
-            model === "B"
-              ? value
-              : prev[selectedPairId]?.[currentPromptIndex]?.commentB || "",
-        },
+      [currentTestId]: {
+        commentA: model === "A" ? value : prev[currentTestId]?.commentA || "",
+        commentB: model === "B" ? value : prev[currentTestId]?.commentB || "",
       },
     }));
   };
 
-  const handleBackToList = () => {
-    setSelectedPairId(null);
-    setCurrentPromptIndex(0);
-    setSelectedWinner(null);
+  const appendDrawnTest = (experimentId: string, draw: BackendDrawBlindTestResponse) => {
+    setDrawnTestsByExperiment((prev) => {
+      const existing = prev[experimentId] || [];
+      if (existing.some((item) => item.test.id === draw.test.id)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [experimentId]: [...existing, draw],
+      };
+    });
   };
 
-
-  const handlePrevious = () => {
-    if (currentPromptIndex > 0) {
-      setCurrentPromptIndex(currentPromptIndex - 1);
-      const prevVote = evaluations[selectedPairId!]?.[currentPromptIndex - 1];
-      setSelectedWinner(prevVote || null);
+  const loadExperiments = async () => {
+    try {
+      const accessToken = getAccessToken();
+      const rows =
+        user?.isHead
+          ? await getActiveExperiments(accessToken)
+          : await getActiveJudgeExperiments(accessToken);
+      setBackendExperiments(rows);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Experiments could not be loaded."
+      );
+      setShowAlertToast(true);
+      setBackendExperiments([]);
+    } finally {
+      setIsLoadingExperiments(false);
     }
   };
 
-  const handleNext = () => {
-    if (!selectedWinner || !selectedPairId) {
-      setAlertMessage("Please select an option before proceeding");
+  useEffect(() => {
+    setIsLoadingExperiments(true);
+    loadExperiments();
+  }, [user?.isHead]);
+
+  const openExperiment = async (experiment: BackendExperiment) => {
+    setIsLoadingBlindTest(true);
+    setAlertMessage("");
+    setShowAlertToast(false);
+    try {
+      const accessToken = getAccessToken();
+      const [draw, questions] = await Promise.all([
+        drawBlindTest(accessToken, experiment.id),
+        getEvaluationQuestionsByExperiment(accessToken, experiment.id),
+      ]);
+
+      setSelectedExperimentId(experiment.id);
+      setEvaluationQuestions(questions);
+      setCurrentBlindTest(draw);
+      appendDrawnTest(experiment.id, draw);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error
+          ? error.message
+          : "Experiment details could not be loaded."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setIsLoadingBlindTest(false);
+    }
+  };
+
+  const handleBackToList = () => {
+    setSelectedExperimentId(null);
+    setCurrentBlindTest(null);
+    setEvaluationQuestions([]);
+  };
+
+  const handleSave = async () => {
+    if (!currentTestId) {
+      return;
+    }
+    if (isCurrentTestSaved) {
+      return;
+    }
+    const selections = draftSelectionsForCurrentTest;
+    const missingSelections = evaluationQuestions.filter(
+      (question) => selections[question.id] === undefined
+    );
+    if (missingSelections.length > 0) {
+      setAlertMessage("Please answer all evaluation questions before saving.");
+      setShowAlertToast(true);
+      return;
+    }
+    const unsupportedSelections = Object.values(selections).some(
+      (value) => value !== "A" && value !== "B"
+    );
+    if (unsupportedSelections) {
+      setAlertMessage(
+        "The current backend preference endpoint only supports Model A or Model B selections."
+      );
+      setShowAlertToast(true);
+      return;
+    }
+    if (evaluationQuestions.length === 0) {
+      setAlertMessage("No evaluation questions found for this experiment.");
+      setShowAlertToast(true);
+      return;
+    }
+    setIsSavingPreference(true);
+    try {
+      const accessToken = getAccessToken();
+      await Promise.all(
+        evaluationQuestions.map((question) =>
+          createPreference(accessToken, {
+            evaluation_question_id: question.id,
+            test_id: currentTestId,
+            preferred_model_id:
+              selections[question.id] === "A"
+                ? currentBlindTest!.test.model_a_id
+                : currentBlindTest!.test.model_b_id,
+          })
+        )
+      );
+
+      setEvaluations((prev) => ({
+        ...prev,
+        [currentTestId]: selections,
+      }));
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error
+          ? error.message
+          : "Preference could not be saved."
+      );
+      setShowAlertToast(true);
+      return;
+    } finally {
+      setIsSavingPreference(false);
+    }
+    setShowSaveToast(true);
+  };
+
+  const handleNext = async () => {
+    if (!selectedExperimentId || !currentTestId) {
+      return;
+    }
+
+    if (evaluations[currentTestId] === undefined) {
+      setAlertMessage("Please save your evaluation before continuing.");
       setShowAlertToast(true);
       return;
     }
 
-    // Save evaluation before moving
-    setEvaluations({
-      ...evaluations,
-      [selectedPairId]: {
-        ...evaluations[selectedPairId],
-        [currentPromptIndex]: selectedWinner,
-      },
-    });
-
-    if (selectedPair && currentPromptIndex < selectedPair.prompts.length - 1) {
-      setCurrentPromptIndex(currentPromptIndex + 1);
-      const nextVote = evaluations[selectedPairId]?.[currentPromptIndex + 1];
-      setSelectedWinner(nextVote || null);
-    } else {
-      // Finished all prompts
+    setIsLoadingBlindTest(true);
+    try {
+      const accessToken = getAccessToken();
+      const draw = await drawBlindTest(accessToken, selectedExperimentId);
+      setCurrentBlindTest(draw);
+      appendDrawnTest(selectedExperimentId, draw);
       setShowToast(true);
-      setTimeout(() => {
-        handleBackToList();
-      }, 1500);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error
+          ? error.message
+          : "A new blind test could not be drawn."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setIsLoadingBlindTest(false);
     }
   };
 
-  // List view
-  if (!selectedPairId) {
+  if (!selectedExperimentId) {
     return (
       <div className="space-y-8">
+        {showAlertToast && (
+          <Toast
+            message={alertMessage}
+            type="error"
+            onClose={() => setShowAlertToast(false)}
+          />
+        )}
+
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-3xl font-bold text-foreground">
@@ -203,98 +282,89 @@ export const Judge: React.FC = () => {
         <div className="bg-muted/30 border border-border rounded-lg p-4">
           <p className="text-sm text-muted-foreground">
             <span className="font-semibold">💡 Your Role:</span> You'll compare
-            responses from two anonymous models. Select the experiment below to
-            begin evaluating. Your votes help determine which models perform
-            best.
+            random blind responses from active experiments in your organization.
           </p>
         </div>
 
         <Card title="Available Experiments">
-          <div className="space-y-3">
-            {comparisonPairs.map((pair) => {
-              const pairEvaluations = evaluations[pair.id] || {};
-              const completed = Object.keys(pairEvaluations).length;
-              const total = pair.prompts.length;
-              const progress = (completed / total) * 100;
+          {isLoadingExperiments ? (
+            <div className="py-8 text-center text-muted-foreground">
+              Loading experiments...
+            </div>
+          ) : backendExperiments.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">
+              No active experiments available for this account.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {backendExperiments.map((experiment) => {
+                const drawn = drawnTestsByExperiment[experiment.id] || [];
+                const saved = drawn.filter(
+                  (item) => evaluations[item.test.id] !== undefined
+                ).length;
 
-              return (
-                <div
-                  key={pair.id}
-                  className="border border-border rounded-lg p-4 hover:border-primary/50 hover:shadow-md transition-all cursor-pointer"
-                  onClick={() => setSelectedPairId(pair.id)}
-                >
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-foreground mb-1">
-                        {pair.title}
-                      </h3>
-                      <p className="text-sm text-muted-foreground mb-2">
-                        Compare two anonymous models on {pair.prompts.length}{" "}
-                        prompts
-                      </p>
-                      {pair.purpose && (
-                        <div className="bg-primary/10 border border-primary/30 rounded px-3 py-2 mb-2">
-                          <p className="text-sm text-primary">
-                            <strong>📋 Evaluation Criteria:</strong>{" "}
-                            {pair.purpose}
+                return (
+                  <button
+                    key={experiment.id}
+                    type="button"
+                    className="w-full border border-border rounded-lg p-4 text-left hover:border-primary/50 hover:shadow-md transition-all"
+                    onClick={() => openExperiment(experiment)}
+                    disabled={isLoadingBlindTest}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1">
+                        <h3 className="text-lg font-semibold text-foreground mb-1">
+                          {experiment.name}
+                        </h3>
+                        <p className="text-sm text-muted-foreground mb-2">
+                          Created: {new Date(experiment.created_at).toLocaleString()}
+                        </p>
+                        {experiment.evaluation_criteria && (
+                          <div className="bg-primary/10 border border-primary/30 rounded px-3 py-2 mb-2">
+                            <p className="text-sm text-primary">
+                              <strong>Evaluation Criteria:</strong>{" "}
+                              {experiment.evaluation_criteria}
+                            </p>
+                          </div>
+                        )}
+                        {drawn.length > 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            Session progress: {saved}/{drawn.length} blind tests saved
                           </p>
-                        </div>
-                      )}
-                    </div>
-                    <span
-                      className={`px-3 py-1 text-xs font-semibold rounded-full ${
-                        completed === total
-                          ? "bg-primary/20 text-primary"
-                          : completed > 0
-                          ? "bg-accent/20 text-accent-foreground"
-                          : "bg-muted/30 text-foreground"
-                      }`}
-                    >
-                      {completed === total
-                        ? "Completed"
-                        : completed > 0
-                        ? "In Progress"
-                        : "Pending"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center space-x-3">
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="text-muted-foreground">Progress</span>
-                        <span className="font-medium text-foreground">
-                          {completed}/{total}
-                        </span>
+                        )}
                       </div>
-                      <Progress value={progress} className="w-full h-2" />
+                      <span className="px-3 py-1 text-xs font-semibold rounded-full bg-primary/10 text-primary">
+                        {experiment.status}
+                      </span>
                     </div>
-                    <Button size="sm" variant="outline">
-                      {completed === 0
-                        ? "Start"
-                        : completed === total
-                        ? "Review"
-                        : "Continue"}
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </Card>
       </div>
     );
   }
 
-  // Evaluation view
-  if (!selectedPair) return null;
+  if (!selectedExperiment || !currentBlindTest) {
+    return null;
+  }
 
   return (
     <div className="space-y-8">
       {showToast && (
         <Toast
-          message="Vote submitted successfully!"
+          message="Blind test loaded."
           type="success"
           onClose={() => setShowToast(false)}
+        />
+      )}
+      {showSaveToast && (
+        <Toast
+          message="Evaluation saved."
+          type="success"
+          onClose={() => setShowSaveToast(false)}
         />
       )}
       {showAlertToast && (
@@ -312,46 +382,45 @@ export const Judge: React.FC = () => {
           </Button>
           <div>
             <h1 className="text-2xl font-bold text-foreground">
-              {selectedPair.title}
+              {selectedExperiment.name}
             </h1>
             <p className="text-sm text-muted-foreground">
-              Prompt {currentPromptIndex + 1} of {selectedPair.prompts.length}
+              Current blind test: {currentBlindTest.test.id}
             </p>
           </div>
         </div>
         <div className="text-right">
-          <div className="text-sm text-muted-foreground">Overall Progress</div>
+          <div className="text-sm text-muted-foreground">Session Progress</div>
           <div className="text-lg font-semibold text-foreground">
-            {Object.keys(evaluations[selectedPairId] || {}).length}/
-            {selectedPair.prompts.length}
+            {sessionSavedCount}/{sessionDrawsForExperiment.length}
           </div>
         </div>
       </div>
 
-      {evaluationCriteria && (
+      {selectedExperiment.evaluation_criteria && (
         <Alert className="bg-primary/10 border-primary">
           <Info className="h-4 w-4" />
           <AlertDescription className="text-primary">
-            <strong>Evaluation Criteria:</strong> {evaluationCriteria}
+            <strong>Evaluation Criteria:</strong>{" "}
+            {selectedExperiment.evaluation_criteria}
           </AlertDescription>
         </Alert>
       )}
 
-        <Alert>
+      <Alert>
         <Info className="h-4 w-4" />
         <AlertDescription>
-          <span className="font-semibold">Instructions:</span> Read the prompt
-          and both responses carefully.{" "}
-          {evaluationCriteria
-            ? "Use the evaluation criteria above to guide your decision."
-            : "Select the response you believe is better based on accuracy, clarity, and helpfulness."}{" "}
-          Model identities are hidden to ensure unbiased evaluation.
+          <span className="font-semibold">Instructions:</span> Read both blind
+          responses carefully and make your selection based on the question and
+          evaluation criteria below.
         </AlertDescription>
       </Alert>
 
-      <Card title="Prompt">
+      <Card title="Question">
         <div className="bg-muted/30 p-4 rounded-lg">
-          <p className="text-foreground text-lg">{currentPrompt}</p>
+          <p className="text-foreground text-lg whitespace-pre-wrap">
+            {currentBlindTest.question_text}
+          </p>
         </div>
       </Card>
 
@@ -363,7 +432,7 @@ export const Judge: React.FC = () => {
             </div>
             <div className="p-4 rounded-lg border-2 border-border bg-muted/30">
               <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap">
-                {dummyComparisons[currentPromptIndex % 3]?.responseA}
+                {currentBlindTest.response_a.model_response}
               </p>
             </div>
 
@@ -374,6 +443,7 @@ export const Judge: React.FC = () => {
                 value={currentFeedback?.commentA || ""}
                 onChange={(e) => handleFeedbackChange("A", e.target.value)}
                 rows={3}
+                disabled={isCurrentTestSaved}
               />
             </div>
           </Card>
@@ -384,7 +454,7 @@ export const Judge: React.FC = () => {
             </div>
             <div className="p-4 rounded-lg border-2 border-border bg-muted/30">
               <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap">
-                {dummyComparisons[currentPromptIndex % 3]?.responseB}
+                {currentBlindTest.response_b.model_response}
               </p>
             </div>
 
@@ -395,167 +465,159 @@ export const Judge: React.FC = () => {
                 value={currentFeedback?.commentB || ""}
                 onChange={(e) => handleFeedbackChange("B", e.target.value)}
                 rows={3}
+                disabled={isCurrentTestSaved}
               />
             </div>
           </Card>
         </div>
 
-        {/* Voting Options - Dynamic based on experiment settings */}
-        <Card>
-          <h3 className="text-lg font-semibold text-foreground mb-4">
-            Select the Better Response
-          </h3>
-          <RadioGroup
-            value={selectedWinner || ""}
-            onValueChange={(value) => setSelectedWinner(value as EvaluationOption)}
-            className={`grid grid-cols-2 gap-3 ${
-              availableOptions.length === 2 ? "md:grid-cols-2" :
-              availableOptions.length === 3 ? "md:grid-cols-3" :
-              availableOptions.length === 4 ? "md:grid-cols-4" :
-              "md:grid-cols-5"
-            }`}
-          >
-            {availableOptions.includes("A") && (
-              <label
-                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                  selectedWinner === "A"
-                    ? "border-primary bg-primary/10"
-                    : "border-border hover:border-primary/50"
-                }`}
-              >
-                <RadioGroupItem value="A" className="mb-2" />
-                <span className="font-medium text-foreground text-center">Model A</span>
-              </label>
-            )}
+        <Card title="Evaluation Questions">
+          <div className="space-y-6">
+            {evaluationQuestions.map((question, index) => {
+              const displayVote =
+                savedSelectionsForCurrentTest[question.id] ??
+                draftSelectionsForCurrentTest[question.id] ??
+                "";
 
-            {availableOptions.includes("B") && (
-              <label
-                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                  selectedWinner === "B"
-                    ? "border-primary bg-primary/10"
-                    : "border-border hover:border-primary/50"
-                }`}
-              >
-                <RadioGroupItem value="B" className="mb-2" />
-                <span className="font-medium text-foreground text-center">Model B</span>
-              </label>
-            )}
+              return (
+                <div key={question.id} className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">
+                    {index + 1}. {question.evaluation_question}
+                  </h3>
+                  <RadioGroup
+                    value={displayVote}
+                    onValueChange={(value) => {
+                      if (isCurrentTestSaved || !currentTestId) return;
+                      setDraftSelections((prev) => ({
+                        ...prev,
+                        [currentTestId]: {
+                          ...(prev[currentTestId] || {}),
+                          [question.id]: value as EvaluationOption,
+                        },
+                      }));
+                    }}
+                    disabled={isCurrentTestSaved}
+                    className={`grid grid-cols-2 gap-3 ${
+                      availableOptions.length === 2
+                        ? "md:grid-cols-2"
+                        : availableOptions.length === 3
+                          ? "md:grid-cols-3"
+                          : availableOptions.length === 4
+                            ? "md:grid-cols-4"
+                            : "md:grid-cols-5"
+                    }`}
+                  >
+                    {availableOptions.map((option) => {
+                      const isSelected = displayVote === option;
+                      const destructive = option === "both-poor";
+                      const optionLabel =
+                        option === "A"
+                          ? "Model A"
+                          : option === "B"
+                            ? "Model B"
+                            : option === "tie"
+                              ? "Both Good"
+                              : option === "both-poor"
+                                ? "Both Poor"
+                                : "I don't know";
 
-            {availableOptions.includes("tie") && (
-              <label
-                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                  selectedWinner === "tie"
-                    ? "border-primary bg-primary/10"
-                    : "border-border hover:border-primary/50"
-                }`}
-              >
-                <RadioGroupItem value="tie" className="mb-2" />
-                <span className="font-medium text-foreground text-center">Both Good</span>
-              </label>
-            )}
-
-            {availableOptions.includes("both-poor") && (
-              <label
-                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                  selectedWinner === "both-poor"
-                    ? "border-destructive bg-destructive/10"
-                    : "border-border hover:border-destructive/50"
-                }`}
-              >
-                <RadioGroupItem value="both-poor" className="mb-2 text-destructive border-destructive" />
-                <span className="font-medium text-foreground text-center">Both Poor</span>
-              </label>
-            )}
-
-            {availableOptions.includes("dont-know") && (
-              <label
-                className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                  selectedWinner === "dont-know"
-                    ? "border-muted-foreground bg-muted/30"
-                    : "border-border hover:border-muted-foreground/50"
-                }`}
-              >
-                <RadioGroupItem value="dont-know" className="mb-2" />
-                <span className="font-medium text-foreground text-center text-sm">I don't know</span>
-              </label>
-            )}
-          </RadioGroup>
+                      return (
+                        <label
+                          key={`${question.id}-${option}`}
+                          className={`flex flex-col items-center justify-center p-4 border-2 rounded-lg transition-all ${
+                            isCurrentTestSaved
+                              ? "cursor-not-allowed opacity-90"
+                              : "cursor-pointer"
+                          } ${
+                            isSelected
+                              ? destructive
+                                ? "border-destructive bg-destructive/10"
+                                : option === "dont-know"
+                                  ? "border-muted-foreground bg-muted/30"
+                                  : "border-primary bg-primary/10"
+                              : destructive
+                                ? "border-border hover:border-destructive/50"
+                                : option === "dont-know"
+                                  ? "border-border hover:border-muted-foreground/50"
+                                  : "border-border hover:border-primary/50"
+                          }`}
+                        >
+                          <RadioGroupItem
+                            value={option}
+                            className={`mb-2 ${destructive ? "text-destructive border-destructive" : ""}`}
+                            disabled={isCurrentTestSaved}
+                          />
+                          <span className="font-medium text-foreground text-center text-sm">
+                            {optionLabel}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </RadioGroup>
+                </div>
+              );
+            })}
+          </div>
         </Card>
       </div>
 
-      <div className="flex justify-between items-center">
+      <div className="flex justify-end items-center gap-3">
         <Button
-          onClick={handlePrevious}
+          onClick={handleSave}
           variant="outline"
-          disabled={currentPromptIndex === 0}
+          size="lg"
+          disabled={
+            evaluationQuestions.length === 0 ||
+            isCurrentTestSaved ||
+            isSavingPreference
+          }
         >
-          ← Previous
+          {isSavingPreference ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Saving...
+            </>
+          ) : (
+            "Save"
+          )}
         </Button>
-
-        {currentPromptIndex < selectedPair.prompts.length - 1 ? (
-          <Button
-            onClick={handleNext}
-            size="lg"
-            disabled={!selectedWinner}
-          >
-            Next →
-          </Button>
-        ) : (
-          <Button
-            onClick={handleNext}
-            size="lg"
-            disabled={!selectedWinner}
-          >
-            Finish
-          </Button>
-        )}
+        <Button onClick={handleNext} size="lg" disabled={!isCurrentTestSaved || isLoadingBlindTest}>
+          {isLoadingBlindTest ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading...
+            </>
+          ) : (
+            "Next →"
+          )}
+        </Button>
       </div>
 
-      {/* Progress indicator */}
-      <Card title="Evaluation Progress">
+      <Card title="Session Progress">
         <div className="space-y-2">
-          {selectedPair.prompts.map((prompt, idx) => {
-            const voted = evaluations[selectedPairId]?.[idx];
-            const getVoteLabel = (vote: string) => {
-              switch (vote) {
-                case "A":
-                  return "✓ Model A";
-                case "B":
-                  return "✓ Model B";
-                case "tie":
-                  return "🤝 Both Equal";
-                case "both-poor":
-                  return "❌ Both Poor";
-                case "dont-know":
-                  return "❓ I don't know";
-                default:
-                  return "";
-              }
-            };
-
+          {sessionDrawsForExperiment.map((draw, index) => {
+            const savedSelections = evaluations[draw.test.id] || {};
+            const answeredCount = Object.keys(savedSelections).length;
             return (
               <div
-                key={idx}
+                key={draw.test.id}
                 className={`flex items-center justify-between p-3 rounded-lg ${
-                  idx === currentPromptIndex
+                  draw.test.id === currentBlindTest.test.id
                     ? "bg-primary/10 border border-primary/30"
                     : "bg-muted/30"
                 }`}
               >
                 <span className="text-sm text-muted-foreground">
-                  Prompt {idx + 1}: {prompt.substring(0, 50)}
-                  {prompt.length > 50 ? "..." : ""}
+                  Blind Test {index + 1}: {draw.test.id}
                 </span>
-                {voted ? (
+                {answeredCount > 0 ? (
                   <span className="text-sm font-medium text-primary">
-                    {getVoteLabel(voted)}
+                    {answeredCount} question{answeredCount !== 1 ? "s" : ""} saved
                   </span>
-                ) : idx === currentPromptIndex ? (
-                  <span className="text-sm text-primary font-medium">
-                    Current
-                  </span>
+                ) : draw.test.id === currentBlindTest.test.id ? (
+                  <span className="text-sm text-primary font-medium">Current</span>
                 ) : (
-                  <span className="text-sm text-muted-foreground/50">Not voted</span>
+                  <span className="text-sm text-muted-foreground/50">Not saved</span>
                 )}
               </div>
             );

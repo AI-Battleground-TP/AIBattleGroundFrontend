@@ -21,6 +21,7 @@ import {
   signupRequest,
   type OrganizationItem,
 } from "../../lib/authApi";
+import { Eye, EyeOff } from "lucide-react";
 
 type LoginStep = "credentials" | "organization";
 type SignupStep = "credentials" | "organization";
@@ -39,7 +40,6 @@ export const Login: React.FC = () => {
   const [loginPassword, setLoginPassword] = useState("");
   const [selectedOrgId, setSelectedOrgId] = useState("");
   const [loginAccessToken, setLoginAccessToken] = useState("");
-  const [loginRefreshToken, setLoginRefreshToken] = useState("");
   const [loginDisplayName, setLoginDisplayName] = useState("");
   const [loginOrganizations, setLoginOrganizations] = useState<OrganizationItem[]>(
     []
@@ -52,6 +52,8 @@ export const Login: React.FC = () => {
   const [signupEmail, setSignupEmail] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
   const [signupPhone, setSignupPhone] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showSignupPassword, setShowSignupPassword] = useState(false);
   const [signupOrgMode, setSignupOrgMode] = useState<SignupOrgMode>("join");
   const [signupOrganizationId, setSignupOrganizationId] = useState("");
   const [signupOrganizationName, setSignupOrganizationName] = useState("");
@@ -76,7 +78,6 @@ export const Login: React.FC = () => {
       }
 
       setLoginAccessToken(tokenResponse.access_token);
-      setLoginRefreshToken(tokenResponse.refresh_token);
       setLoginDisplayName(`${me.name} ${me.surname}`.trim());
       setLoginOrganizations(organizations);
       setSelectedOrgId(organizations[0].id);
@@ -121,7 +122,7 @@ export const Login: React.FC = () => {
         selectedOrgId
       );
       const finalAccessToken = switchedToken.access_token;
-      const finalRefreshToken = switchedToken.refresh_token || loginRefreshToken;
+      const finalRefreshToken = switchedToken.refresh_token;
       const me = await getMe(finalAccessToken);
       const isHeadUser = await detectHeadAccess(finalAccessToken, selectedOrgId);
       const mappedRole = isHeadUser ? "user" : "judge";
@@ -206,8 +207,7 @@ export const Login: React.FC = () => {
         selectedOrganizationId
       );
       const finalAccessToken = switchedToken.access_token;
-      const finalRefreshToken =
-        switchedToken.refresh_token || initialToken.refresh_token;
+      const finalRefreshToken = switchedToken.refresh_token;
       const me = await getMe(finalAccessToken);
 
       let organizationName = selectedOrganizationName;
@@ -270,14 +270,34 @@ export const Login: React.FC = () => {
 
               <div className="space-y-2">
                 <Label htmlFor="login-password">Password</Label>
-                <Input
-                  id="login-password"
-                  type="password"
-                  value={loginPassword}
-                  onChange={(event) => setLoginPassword(event.target.value)}
-                  placeholder="Enter your password"
-                  required
-                />
+                <div className="relative">
+                  <Input
+                    id="login-password"
+                    type={showLoginPassword ? "text" : "password"}
+                    value={loginPassword}
+                    onChange={(event) => setLoginPassword(event.target.value)}
+                    placeholder="Enter your password"
+                    className="pr-10"
+                    required
+                    autoComplete="current-password"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-10 w-10 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowLoginPassword((open) => !open)}
+                    aria-label={
+                      showLoginPassword ? "Hide password" : "Show password"
+                    }
+                  >
+                    {showLoginPassword ? (
+                      <EyeOff className="h-4 w-4" aria-hidden />
+                    ) : (
+                      <Eye className="h-4 w-4" aria-hidden />
+                    )}
+                  </Button>
+                </div>
               </div>
 
               <div className="flex gap-2">
@@ -374,13 +394,33 @@ export const Login: React.FC = () => {
 
               <div className="space-y-2">
                 <Label htmlFor="signup-password">Password</Label>
-                <Input
-                  id="signup-password"
-                  type="password"
-                  value={signupPassword}
-                  onChange={(event) => setSignupPassword(event.target.value)}
-                  required
-                />
+                <div className="relative">
+                  <Input
+                    id="signup-password"
+                    type={showSignupPassword ? "text" : "password"}
+                    value={signupPassword}
+                    onChange={(event) => setSignupPassword(event.target.value)}
+                    className="pr-10"
+                    required
+                    autoComplete="new-password"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0 top-0 h-10 w-10 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowSignupPassword((open) => !open)}
+                    aria-label={
+                      showSignupPassword ? "Hide password" : "Show password"
+                    }
+                  >
+                    {showSignupPassword ? (
+                      <EyeOff className="h-4 w-4" aria-hidden />
+                    ) : (
+                      <Eye className="h-4 w-4" aria-hidden />
+                    )}
+                  </Button>
+                </div>
               </div>
 
               <div className="space-y-2">

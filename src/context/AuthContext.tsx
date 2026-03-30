@@ -76,12 +76,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
   });
   const [isSwitchingOrganization, setIsSwitchingOrganization] = useState(false);
 
-  const persistTokens = (accessToken?: string, refreshToken?: string) => {
-    if (accessToken) {
-      localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-    }
-    if (refreshToken) {
-      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+  /**
+   * Replaces session tokens in localStorage: old access/refresh are removed first,
+   * then the new access token is always written. Refresh is written only if present;
+   * otherwise the refresh key is left cleared (no mixing new access with old refresh).
+   */
+  const replaceSessionTokens = (
+    accessToken: string,
+    refreshToken?: string | null
+  ) => {
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
+    localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+    if (refreshToken != null && String(refreshToken).length > 0) {
+      localStorage.setItem(REFRESH_TOKEN_KEY, String(refreshToken));
     }
   };
 
@@ -91,7 +99,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
   };
 
   const getStoredAccessToken = () => localStorage.getItem(ACCESS_TOKEN_KEY);
-  const getStoredRefreshToken = () => localStorage.getItem(REFRESH_TOKEN_KEY);
   const persistUser = (nextUser: User) => {
     setUser(nextUser);
     localStorage.setItem(USER_KEY, JSON.stringify(nextUser));
@@ -114,14 +121,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
     const nextUser = createSessionUser(data);
     persistUser(nextUser);
     persistOrganizations(data.organizations ?? []);
-    persistTokens(data.accessToken, data.refreshToken);
+    if (data.accessToken) {
+      replaceSessionTokens(data.accessToken, data.refreshToken ?? null);
+    }
   };
 
   const signup = (data: AuthInput) => {
     const nextUser = createSessionUser(data);
     persistUser(nextUser);
     persistOrganizations(data.organizations ?? []);
-    persistTokens(data.accessToken, data.refreshToken);
+    if (data.accessToken) {
+      replaceSessionTokens(data.accessToken, data.refreshToken ?? null);
+    }
   };
 
   const switchRole = (role: "user" | "judge") => {
@@ -150,7 +161,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
       }
 
       const accessToken = getStoredAccessToken();
-      const refreshToken = getStoredRefreshToken();
       if (!accessToken) {
         throw new Error("Missing access token.");
       }
@@ -162,8 +172,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
           organizationId
         );
         const finalAccessToken = switchedToken.access_token;
-        const finalRefreshToken =
-          switchedToken.refresh_token || refreshToken || undefined;
+        const finalRefreshToken = switchedToken.refresh_token ?? null;
+        replaceSessionTokens(finalAccessToken, finalRefreshToken);
         const me = await getMe(finalAccessToken);
         const nextOrganizations =
           organizations.length > 0
@@ -185,7 +195,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({
             selectedOrganization?.name || user.organizationName || "Organization",
         };
 
-        persistTokens(finalAccessToken, finalRefreshToken);
         persistOrganizations(nextOrganizations);
         persistUser(nextUser);
         return nextUser;

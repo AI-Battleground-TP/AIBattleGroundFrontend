@@ -48,14 +48,75 @@ export interface BackendModel {
   is_active: boolean;
 }
 
-export interface BackendTest {
+export interface BackendExperiment {
   id: string;
   organization_id: string;
   input_pool_id: string;
   name: string;
   description?: string | null;
+  evaluation_criteria?: string | null;
   status: string;
   created_at: string;
+}
+
+export interface BackendEvaluationQuestion {
+  id: string;
+  experiment_id: string;
+  evaluation_question: string;
+  created_at: string;
+}
+
+export interface BackendTest {
+  id: string;
+  experiment_id: string;
+  judge_id: string;
+  model_a_id: string;
+  model_b_id: string;
+  question_id: string;
+  feedback_a?: string | null;
+  feedback_b?: string | null;
+  created_at: string;
+}
+
+export interface BackendResponseItem {
+  id: string;
+  question_id: string;
+  model_id: string;
+  experiment_id: string;
+  model_response: string;
+  created_at: string;
+}
+
+export interface BackendDrawBlindTestResponse {
+  test: BackendTest;
+  question_text: string;
+  response_a: BackendResponseItem;
+  response_b: BackendResponseItem;
+}
+
+export interface BackendPreference {
+  id: string;
+  evaluation_question_id: string;
+  test_id: string;
+  preferred_model_id: string;
+  created_at: string;
+}
+
+export interface BackendModelPreferenceStatRow {
+  model_id: string;
+  model_name: string;
+  preference_count: number;
+  share_of_total: number;
+}
+
+export interface BackendExperimentModelPreferenceSummary {
+  experiment_id: string;
+  test_ids: string[];
+  total_tests: number;
+  total_preferences: number;
+  model_breakdown: BackendModelPreferenceStatRow[];
+  top_preferred_model_ids: string[];
+  top_preference_count: number;
 }
 
 interface ApiErrorPayload {
@@ -65,7 +126,7 @@ interface ApiErrorPayload {
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.trim() ||
-  "http://10.8.51.106:8001/api/v1";
+  "http://10.8.58.150:8001/api/v1";
 
 const resolveErrorMessage = async (response: Response): Promise<string> => {
   try {
@@ -394,18 +455,19 @@ export const getModels = (accessToken: string, skip = 0, limit = 100) =>
     },
   });
 
-export const createTest = (
+export const createExperiment = (
   accessToken: string,
   payload: {
     name: string;
     description?: string;
+    evaluation_criteria?: string;
     status: string;
     input_pool_id: string;
     organization_id: string;
     model_ids?: string[];
   }
 ) =>
-  requestJson<BackendTest>("/tests", {
+  requestJson<BackendExperiment>("/experiments", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -413,11 +475,166 @@ export const createTest = (
     body: JSON.stringify(payload),
   });
 
-export const startTest = (accessToken: string, testId: string) =>
-  requestJson<{ message: string; task_id: string; test_id: string }>(
-    `/tests/${testId}/start`,
+export const startExperiment = (accessToken: string, experimentId: string) =>
+  requestJson<{ message: string; task_id: string; experiment_id: string }>(
+    `/experiments/${experimentId}/start`,
     {
       method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getActiveJudgeExperiments = (
+  accessToken: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendExperiment[]>(
+    `/experiments/active/judge?skip=${skip}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getActiveExperiments = (
+  accessToken: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendExperiment[]>(`/experiments/active?skip=${skip}&limit=${limit}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const getExperiments = (accessToken: string, skip = 0, limit = 100) =>
+  requestJson<BackendExperiment[]>(`/experiments?skip=${skip}&limit=${limit}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const createEvaluationQuestion = (
+  accessToken: string,
+  payload: {
+    experiment_id: string;
+    evaluation_question: string;
+  }
+) =>
+  requestJson<BackendEvaluationQuestion>("/evaluation-questions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+export const getEvaluationQuestionsByExperiment = (
+  accessToken: string,
+  experimentId: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendEvaluationQuestion[]>(
+    `/evaluation-questions/experiment/${experimentId}?skip=${skip}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const drawBlindTest = (accessToken: string, experimentId: string) =>
+  requestJson<BackendDrawBlindTestResponse>(
+    `/experiments/${experimentId}/draw-blind-test`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const createPreference = (
+  accessToken: string,
+  payload: {
+    evaluation_question_id: string;
+    test_id: string;
+    preferred_model_id: string;
+  }
+) =>
+  requestJson<BackendPreference>("/preferences", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+export const getPreferencesByTest = (
+  accessToken: string,
+  testId: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendPreference[]>(
+    `/preferences/test/${testId}?skip=${skip}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getResponsesByQuestion = (
+  accessToken: string,
+  questionId: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendResponseItem[]>(
+    `/responses/question/${questionId}?skip=${skip}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getTestsByExperiment = (
+  accessToken: string,
+  experimentId: string,
+  skip = 0,
+  limit = 1000
+) =>
+  requestJson<BackendTest[]>(
+    `/tests/experiment/${experimentId}?skip=${skip}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getExperimentModelPreferenceSummary = (
+  accessToken: string,
+  experimentId: string
+) =>
+  requestJson<BackendExperimentModelPreferenceSummary>(
+    `/analytics/experiments/${experimentId}/model-preference-summary`,
+    {
+      method: "GET",
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },

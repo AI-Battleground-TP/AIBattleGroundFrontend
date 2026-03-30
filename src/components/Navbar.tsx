@@ -98,6 +98,11 @@ export const Navbar: React.FC = () => {
     }
   };
 
+  const currentOrganizationLabel =
+    user?.organizationName ||
+    organizations.find((o) => o.id === user?.organizationId)?.name ||
+    "";
+
   return (
     <nav className="bg-background border-b relative z-50">
       <div className="w-full px-4 sm:px-6 lg:px-8">
@@ -218,14 +223,25 @@ export const Navbar: React.FC = () => {
                   </div>
                 )}
 
-                <ShadcnButton
-                  variant="outline"
-                  size="sm"
-                  onClick={openSwitchOrganizationDialog}
-                  disabled={organizations.length === 0}
-                >
-                  Switch Organization
-                </ShadcnButton>
+                <div className="flex min-w-0 max-w-[min(100%,20rem)] sm:max-w-xs items-center gap-2">
+                  <span
+                    className="text-sm text-foreground truncate"
+                    title={
+                      currentOrganizationLabel || "No organization selected"
+                    }
+                  >
+                    {currentOrganizationLabel || "—"}
+                  </span>
+                  <ShadcnButton
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={openSwitchOrganizationDialog}
+                    disabled={organizations.length === 0}
+                  >
+                    Switch Organization
+                  </ShadcnButton>
+                </div>
 
                 <span className="text-sm text-muted-foreground hidden md:block">
                   {user.name}

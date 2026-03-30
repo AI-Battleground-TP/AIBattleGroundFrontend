@@ -2,7 +2,8 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { ModelPoolItem, QuestionPool, Experiment, Question } from "../types";
 import {
-  createTest as createTestRequest,
+  createEvaluationQuestion as createEvaluationQuestionRequest,
+  createExperiment as createExperimentRequest,
   createQuestion,
   createInputPool,
   createQuestionsBulk,
@@ -16,7 +17,7 @@ import {
   getQuestionsByCategory as getQuestionsByCategoryRequest,
   getQuestionsByPool,
   getQuestionsByType as getQuestionsByTypeRequest,
-  startTest as startTestRequest,
+  startExperiment as startExperimentRequest,
   updateQuestion as updateQuestionRequest,
   updateInputPool,
 } from "../lib/authApi";
@@ -119,25 +120,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     modelString: model.model_string,
     isActive: model.is_active,
   });
-
-  const buildTestDescription = (experiment: Omit<Experiment, "id" | "createdAt">) => {
-    const parts: string[] = [];
-
-    if (experiment.evaluationCriteria?.trim()) {
-      parts.push(`Evaluation Criteria: ${experiment.evaluationCriteria.trim()}`);
-    }
-
-    const customQuestionTexts =
-      experiment.customQuestions
-        ?.map((question) => question.text.trim())
-        .filter(Boolean) ?? [];
-
-    if (customQuestionTexts.length > 0) {
-      parts.push(`Additional Questions: ${customQuestionTexts.join(" | ")}`);
-    }
-
-    return parts.join("\n");
-  };
 
   const loadModels = async () => {
     const { accessToken } = getAuthContext();
@@ -351,21 +333,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const addExperiment = async (experiment: Omit<Experiment, "id" | "createdAt">) => {
     const { accessToken, organizationId } = getAuthContext();
 
-    const createdTest = await createTestRequest(accessToken, {
+    const created = await createExperimentRequest(accessToken, {
       name: experiment.title,
-      description: buildTestDescription(experiment) || undefined,
+      evaluation_criteria: experiment.evaluationCriteria?.trim() || undefined,
       status: "DRAFT",
       input_pool_id: experiment.questionPoolId,
       organization_id: organizationId,
       model_ids: experiment.selectedModels.map((model) => model.id),
     });
 
-    await startTestRequest(accessToken, createdTest.id);
+    const customQuestionTexts =
+      experiment.customQuestions
+        ?.map((question) => question.text.trim())
+        .filter(Boolean) ?? [];
+
+    if (customQuestionTexts.length > 0) {
+      await Promise.all(
+        customQuestionTexts.map((evaluationQuestion) =>
+          createEvaluationQuestionRequest(accessToken, {
+            experiment_id: created.id,
+            evaluation_question: evaluationQuestion,
+          })
+        )
+      );
+    }
+
+    await startExperimentRequest(accessToken, created.id);
 
     const newExperiment: Experiment = {
       ...experiment,
-      id: createdTest.id,
-      createdAt: new Date(createdTest.created_at),
+      id: created.id,
+      createdAt: new Date(created.created_at),
       status: "in-progress",
     };
 

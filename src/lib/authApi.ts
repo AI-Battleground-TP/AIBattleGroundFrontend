@@ -15,6 +15,18 @@ export interface BackendUser {
   created_by_admin_id?: string | null;
 }
 
+export interface BackendAuthMe {
+  name: string;
+  surname: string;
+  phone?: string | null;
+  email: string;
+  organization_id: string;
+  org_role: "HEAD" | "JUDGE";
+  experiments_total_in_organization: number;
+  experiments_participated: number;
+  tests_answered_in_organization: number;
+}
+
 export interface OrganizationItem {
   id: string;
   name: string;
@@ -48,6 +60,25 @@ export interface BackendModel {
   is_active: boolean;
 }
 
+export type BackendModelConfigTemplate = Record<string, unknown>;
+
+export interface BackendModelConfigTemplateResponse {
+  config: BackendModelConfigTemplate;
+  field_help?: Record<string, unknown>;
+}
+
+export interface LlmProviderInfo {
+  id: string;
+  kind: string;
+  model_string_hint: string;
+  env_vars: string[];
+  notes?: string | null;
+}
+
+export interface LlmProvidersResponse {
+  providers: LlmProviderInfo[];
+}
+
 export interface BackendExperiment {
   id: string;
   organization_id: string;
@@ -57,12 +88,21 @@ export interface BackendExperiment {
   evaluation_criteria?: string | null;
   status: string;
   created_at: string;
+  metadata_json?: Record<string, unknown> | null;
 }
 
 export interface BackendEvaluationQuestion {
   id: string;
   experiment_id: string;
   evaluation_question: string;
+  created_at: string;
+}
+
+export interface BackendExperimentModelPrompt {
+  id: string;
+  experiment_id: string;
+  model_id: string;
+  system_prompt: string;
   created_at: string;
 }
 
@@ -126,7 +166,7 @@ interface ApiErrorPayload {
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.trim() ||
-  "http://10.8.58.150:8001/api/v1";
+  "http://10.8.34.73:8001/api/v1";
 
 const resolveErrorMessage = async (response: Response): Promise<string> => {
   try {
@@ -175,7 +215,7 @@ export const signupRequest = (data: {
   });
 
 export const getMe = (accessToken: string) =>
-  requestJson<BackendUser>("/auth/me", {
+  requestJson<BackendAuthMe>("/auth/me", {
     method: "GET",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -455,6 +495,107 @@ export const getModels = (accessToken: string, skip = 0, limit = 100) =>
     },
   });
 
+export const createModel = (
+  accessToken: string,
+  payload: {
+    name: string;
+    api_key: string;
+    model_string: string;
+    config_json?: Record<string, unknown>;
+    is_active?: boolean;
+  }
+) =>
+  requestJson<BackendModel>("/models", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+export const updateModel = (
+  accessToken: string,
+  modelId: string,
+  payload: {
+    name?: string;
+    api_key?: string;
+  }
+) =>
+  requestJson<BackendModel>(`/models/${modelId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+export const patchModelArchive = (
+  accessToken: string,
+  modelId: string,
+  isArchived: boolean
+) =>
+  requestJson<BackendModel>(`/models/${modelId}/archive`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ is_archived: isArchived }),
+  });
+
+export const deleteModel = (accessToken: string, modelId: string) =>
+  requestJson<{ message: string; deleted_model_id: string }>(`/models/${modelId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const duplicateModel = (
+  accessToken: string,
+  modelId: string,
+  body?: { name?: string; config_json?: Record<string, unknown> }
+) =>
+  requestJson<BackendModel>(`/models/${modelId}/duplicate`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body ?? {}),
+  });
+
+export const getModelConfigTemplate = async (accessToken: string, provider: string) => {
+  const payload = await requestJson<
+    BackendModelConfigTemplate | BackendModelConfigTemplateResponse
+  >(
+    `/models/config-template?provider=${encodeURIComponent(provider)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+  if (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    "config" in payload
+  ) {
+    return (payload as BackendModelConfigTemplateResponse).config;
+  }
+
+  return payload as BackendModelConfigTemplate;
+};
+
+export const getLlmProviders = (accessToken: string) =>
+  requestJson<LlmProvidersResponse>("/llm/providers", {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
 export const createExperiment = (
   accessToken: string,
   payload: {
@@ -483,6 +624,23 @@ export const startExperiment = (accessToken: string, experimentId: string) =>
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
+    }
+  );
+
+export const attachModelToExperiment = (
+  accessToken: string,
+  experimentId: string,
+  modelId: string,
+  systemPrompt: string
+) =>
+  requestJson<BackendExperimentModelPrompt>(
+    `/experiments/${experimentId}/models/${modelId}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ system_prompt: systemPrompt }),
     }
   );
 
@@ -595,6 +753,14 @@ export const getPreferencesByTest = (
     }
   );
 
+export const getPreferences = (accessToken: string, skip = 0, limit = 1000) =>
+  requestJson<BackendPreference[]>(`/preferences?skip=${skip}&limit=${limit}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
 export const getResponsesByQuestion = (
   accessToken: string,
   questionId: string,
@@ -627,6 +793,22 @@ export const getTestsByExperiment = (
     }
   );
 
+export const getMyTests = (accessToken: string, skip = 0, limit = 1000) =>
+  requestJson<BackendTest[]>(`/tests/my?skip=${skip}&limit=${limit}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const getJudgeExperiment = (accessToken: string, experimentId: string) =>
+  requestJson<BackendExperiment>(`/experiments/${experimentId}/judge`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
 export const getExperimentModelPreferenceSummary = (
   accessToken: string,
   experimentId: string
@@ -640,3 +822,22 @@ export const getExperimentModelPreferenceSummary = (
       },
     }
   );
+
+export const removeModelFromExperiment = (
+  accessToken: string,
+  experimentId: string,
+  modelId: string
+) =>
+  requestJson<{
+    message: string;
+    experiment_id: string;
+    model_id: string;
+    deleted_responses?: number;
+    deleted_tests?: number;
+    deleted_preferences?: number;
+  }>(`/experiments/${experimentId}/models/${modelId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });

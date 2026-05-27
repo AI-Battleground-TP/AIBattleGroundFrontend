@@ -2,11 +2,16 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { ModelPoolItem, QuestionPool, Experiment, Question } from "../types";
 import {
+  type BackendModel,
+  attachModelToExperiment,
+  createModel as createModelRequest,
   createEvaluationQuestion as createEvaluationQuestionRequest,
   createExperiment as createExperimentRequest,
   createQuestion,
   createInputPool,
   createQuestionsBulk,
+  deleteModel as deleteModelRequest,
+  duplicateModel as duplicateModelRequest,
   deleteQuestion as deleteQuestionRequest,
   deleteInputPool as deleteInputPoolRequest,
   getModels as getModelsRequest,
@@ -17,7 +22,9 @@ import {
   getQuestionsByCategory as getQuestionsByCategoryRequest,
   getQuestionsByPool,
   getQuestionsByType as getQuestionsByTypeRequest,
+  patchModelArchive as patchModelArchiveRequest,
   startExperiment as startExperimentRequest,
+  updateModel as updateModelRequest,
   updateQuestion as updateQuestionRequest,
   updateInputPool,
 } from "../lib/authApi";
@@ -26,8 +33,11 @@ interface AppContextType {
   // Models
   models: ModelPoolItem[];
   loadModels: () => Promise<void>;
-  addModel: (model: Omit<ModelPoolItem, "id" | "createdAt">) => void;
-  updateModel: (id: string, updates: Partial<ModelPoolItem>) => void;
+  addModel: (model: Omit<ModelPoolItem, "id" | "createdAt">) => Promise<void>;
+  updateModel: (id: string, updates: Partial<ModelPoolItem>) => Promise<void>;
+  deleteModel: (id: string) => Promise<void>;
+  archiveModel: (id: string, isArchived: boolean) => Promise<void>;
+  duplicateModel: (id: string, name: string) => Promise<void>;
   
   // Question Pools
   questionPools: QuestionPool[];
@@ -105,21 +115,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return provider ? formatProviderName(provider) : "Unknown";
   };
 
-  const mapModel = (model: {
-    id: string;
-    name: string;
-    api_key: string;
-    model_string: string;
-    is_active: boolean;
-  }): ModelPoolItem => ({
+  const providerLabels: Record<string, string> = {
+    openrouter: "OpenRouter",
+    aisuite_openai: "OpenAI",
+    aisuite_azure: "Azure",
+    aisuite_aws: "AWS",
+    native_openai: "OpenAI",
+    native_anthropic: "Anthropic",
+  };
+
+  const mapModel = (model: BackendModel): ModelPoolItem => {
+    const configJson =
+      model.config_json && typeof model.config_json === "object" && !Array.isArray(model.config_json)
+        ? (model.config_json as Record<string, unknown>)
+        : undefined;
+
+    return ({
+    providerId:
+      typeof configJson?.provider === "string" ? configJson.provider : undefined,
     id: model.id,
     name: model.name,
-    provider: getProviderFromModelString(model.model_string),
+    provider:
+      (typeof configJson?.provider === "string"
+        ? providerLabels[configJson.provider]
+        : undefined) || getProviderFromModelString(model.model_string),
     apiKey: model.api_key,
     createdAt: undefined,
     modelString: model.model_string,
     isActive: model.is_active,
-  });
+    configJson,
+    });
+  };
 
   const loadModels = async () => {
     const { accessToken } = getAuthContext();
@@ -127,19 +153,47 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setModels(backendModels.map(mapModel));
   };
 
-  const addModel = (model: Omit<ModelPoolItem, "id" | "createdAt">) => {
-    const newModel: ModelPoolItem = {
-      ...model,
-      id: `model-${Date.now()}`,
-      createdAt: new Date(),
-    };
-    setModels((prev) => [...prev, newModel]);
+  const addModel = async (modelIn: Omit<ModelPoolItem, "id" | "createdAt">) => {
+    const { accessToken } = getAuthContext();
+    const created = await createModelRequest(accessToken, {
+      name: modelIn.name,
+      api_key: modelIn.apiKey,
+      model_string: modelIn.modelString ?? "",
+      config_json: modelIn.configJson,
+      is_active: modelIn.isActive ?? true,
+    });
+    setModels((prev) => [mapModel(created), ...prev]);
   };
 
-  const updateModel = (id: string, updates: Partial<ModelPoolItem>) => {
-    setModels((prev) =>
-      prev.map((model) => (model.id === id ? { ...model, ...updates } : model))
-    );
+  const updateModel = async (id: string, updates: Partial<ModelPoolItem>) => {
+    const { accessToken } = getAuthContext();
+    const current = models.find((item) => item.id === id);
+    if (!current) {
+      throw new Error("Model not found.");
+    }
+    const updated = await updateModelRequest(accessToken, id, {
+      name: updates.name ?? current.name,
+      api_key: updates.apiKey ?? current.apiKey,
+    });
+    setModels((prev) => prev.map((model) => (model.id === id ? mapModel(updated) : model)));
+  };
+
+  const deleteModel = async (id: string) => {
+    const { accessToken } = getAuthContext();
+    await deleteModelRequest(accessToken, id);
+    setModels((prev) => prev.filter((model) => model.id !== id));
+  };
+
+  const duplicateModel = async (id: string, name: string) => {
+    const { accessToken } = getAuthContext();
+    const created = await duplicateModelRequest(accessToken, id, { name });
+    setModels((prev) => [mapModel(created), ...prev]);
+  };
+
+  const archiveModel = async (id: string, isArchived: boolean) => {
+    const { accessToken } = getAuthContext();
+    const updated = await patchModelArchiveRequest(accessToken, id, isArchived);
+    setModels((prev) => prev.map((model) => (model.id === id ? mapModel(updated) : model)));
   };
 
   const loadQuestionPools = async () => {
@@ -342,6 +396,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       model_ids: experiment.selectedModels.map((model) => model.id),
     });
 
+    const promptEntries = experiment.selectedModels
+      .map((model) => ({
+        modelId: model.id,
+        systemPrompt: experiment.modelSystemPrompts?.[model.id]?.trim() ?? "",
+      }))
+      .filter((entry) => entry.systemPrompt.length > 0);
+
+    if (promptEntries.length > 0) {
+      await Promise.all(
+        promptEntries.map((entry) =>
+          attachModelToExperiment(
+            accessToken,
+            created.id,
+            entry.modelId,
+            entry.systemPrompt
+          )
+        )
+      );
+    }
+
     const customQuestionTexts =
       experiment.customQuestions
         ?.map((question) => question.text.trim())
@@ -392,6 +466,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         loadModels,
         addModel,
         updateModel,
+        deleteModel,
+        archiveModel,
+        duplicateModel,
         questionPools,
         loadQuestionPools,
         addQuestionPool,
@@ -422,4 +499,3 @@ export const useApp = () => {
   }
   return context;
 };
-

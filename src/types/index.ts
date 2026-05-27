@@ -36,7 +36,26 @@ export interface Comparison {
   createdAt: Date;
 }
 
-export type LeaderboardCategory = "all" | "health" | "sports" | "mathematics" | "philosophy" | "religion";
+export type LeaderboardCategory =
+  | "all"
+  | "general"
+  | "reasoning"
+  | "coding"
+  | "mathematics"
+  | "science"
+  | "health"
+  | "law"
+  | "finance"
+  | "business"
+  | "education"
+  | "history"
+  | "philosophy"
+  | "religion"
+  | "creative-writing"
+  | "summarization"
+  | "translation"
+  | "safety"
+  | "sports";
 
 export interface LeaderboardEntry {
   id: string;
@@ -128,10 +147,12 @@ export interface ModelPoolItem {
   id: string;
   name: string;
   provider: string;
+  providerId?: string;
   apiKey: string;
   createdAt?: Date;
   modelString?: string;
   isActive?: boolean;
+  configJson?: Record<string, unknown>;
 }
 
 export interface Question {
@@ -161,6 +182,7 @@ export interface Experiment {
   // New fields
   evaluationCriteria?: string; // Notes for judges on how to evaluate
   customQuestions?: Question[]; // Optional additional questions
+  modelSystemPrompts?: Record<string, string>; // Optional per-model system prompts for this experiment
 }
 
 export interface ExperimentComparison {

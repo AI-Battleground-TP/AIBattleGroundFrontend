@@ -19,14 +19,25 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { ChevronDown, Info, Loader2 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
 import { cn } from "@/lib/utils";
-import type { Question } from "../../types";
+import type { ModelPoolItem, Question } from "../../types";
+
+type SelectedModelEntry = {
+  selectionId: string;
+  modelId: string;
+};
+
+type SelectedModelView = ModelPoolItem & {
+  selectionId: string;
+  displayName: string;
+};
 
 export const Dashboard: React.FC = () => {
   const { models, questionPools, addExperiment, loadModels, loadQuestionPools } = useApp();
   
   // Form state
   const [experimentTitle, setExperimentTitle] = useState("");
-  const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [selectedModelEntries, setSelectedModelEntries] = useState<SelectedModelEntry[]>([]);
+  const [modelSystemPrompts, setModelSystemPrompts] = useState<Record<string, string>>({});
   const [selectedPoolId, setSelectedPoolId] = useState("");
   const [evaluationCriteria, setEvaluationCriteria] = useState("");
   const [customQuestions, setCustomQuestions] = useState<string[]>([""]);
@@ -35,12 +46,20 @@ export const Dashboard: React.FC = () => {
   const [alertMessage, setAlertMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleModelToggle = (modelId: string) => {
-    if (selectedModelIds.includes(modelId)) {
-      setSelectedModelIds(selectedModelIds.filter(id => id !== modelId));
-    } else {
-      setSelectedModelIds([...selectedModelIds, modelId]);
-    }
+  const handleAddModelEntry = (modelId: string) => {
+    const selectionId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${modelId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setSelectedModelEntries((prev) => [...prev, { selectionId, modelId }]);
+    setModelSystemPrompts((prev) => ({
+      ...prev,
+      [modelId]: prev[modelId] ?? "",
+    }));
+  };
+
+  const handleRemoveModelEntry = (selectionId: string) => {
+    setSelectedModelEntries((prev) => prev.filter((entry) => entry.selectionId !== selectionId));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -52,7 +71,7 @@ export const Dashboard: React.FC = () => {
       return;
     }
 
-    if (selectedModelIds.length < 2) {
+    if (selectedModelEntries.length < 2) {
       setAlertMessage("Please select at least 2 models to compare");
       setShowAlertToast(true);
       return;
@@ -78,7 +97,9 @@ export const Dashboard: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      const selectedModels = models.filter(m => selectedModelIds.includes(m.id));
+      const selectedModels: ModelPoolItem[] = selectedModelEntries
+        .map((entry) => models.find((m) => m.id === entry.modelId))
+        .filter(Boolean) as ModelPoolItem[];
       const selectedPool = questionPools.find(p => p.id === selectedPoolId);
 
       if (!selectedPool) {
@@ -103,11 +124,13 @@ export const Dashboard: React.FC = () => {
         status: "in-progress",
         evaluationCriteria: evaluationCriteria.trim() || undefined,
         customQuestions: customQuestionObjects.length > 0 ? customQuestionObjects : undefined,
+        modelSystemPrompts,
       });
 
       // Reset form
       setExperimentTitle("");
-      setSelectedModelIds([]);
+      setSelectedModelEntries([]);
+      setModelSystemPrompts({});
       setSelectedPoolId("");
       setEvaluationCriteria("");
       setCustomQuestions([""]);
@@ -125,18 +148,52 @@ export const Dashboard: React.FC = () => {
   };
 
   const selectedPool = questionPools.find(p => p.id === selectedPoolId);
+  const selectionCountsByModelId = useMemo(
+    () =>
+      selectedModelEntries.reduce<Record<string, number>>((acc, entry) => {
+        acc[entry.modelId] = (acc[entry.modelId] || 0) + 1;
+        return acc;
+      }, {}),
+    [selectedModelEntries]
+  );
+  const selectedModelCountBySelectionId = useMemo(() => {
+    const runningCount: Record<string, number> = {};
+    return selectedModelEntries.reduce<Record<string, number>>((acc, entry) => {
+      runningCount[entry.modelId] = (runningCount[entry.modelId] || 0) + 1;
+      acc[entry.selectionId] = runningCount[entry.modelId];
+      return acc;
+    }, {});
+  }, [selectedModelEntries]);
+  const selectedModels = useMemo<SelectedModelView[]>(
+    () =>
+      selectedModelEntries
+        .map((entry) => {
+          const model = models.find((item) => item.id === entry.modelId);
+          if (!model) {
+            return null;
+          }
+          const nth = selectedModelCountBySelectionId[entry.selectionId] || 1;
+          const total = selectionCountsByModelId[entry.modelId] || 1;
+          return {
+            ...model,
+            selectionId: entry.selectionId,
+            displayName: total > 1 ? `${model.name} (${nth})` : model.name,
+          };
+        })
+        .filter((item): item is SelectedModelView => item !== null),
+    [models, selectedModelEntries, selectedModelCountBySelectionId, selectionCountsByModelId]
+  );
 
   const modelsDropdownLabel = useMemo(() => {
-    if (selectedModelIds.length === 0) {
+    if (selectedModelEntries.length === 0) {
       return "-- Select models --";
     }
-    const selected = models.filter((m) => selectedModelIds.includes(m.id));
-    const lines = selected.map((m) => `${m.provider} - ${m.name}`);
+    const lines = selectedModels.map((m) => `${m.provider} - ${m.displayName}`);
     if (lines.length <= 2) {
       return lines.join(", ");
     }
-    return `${selectedModelIds.length} models selected`;
-  }, [models, selectedModelIds]);
+    return `${selectedModelEntries.length} models selected`;
+  }, [selectedModelEntries.length, selectedModels]);
 
   const handleCustomQuestionChange = (index: number, value: string) => {
     const newQuestions = [...customQuestions];
@@ -153,6 +210,13 @@ export const Dashboard: React.FC = () => {
       return;
     }
     setCustomQuestions((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleModelSystemPromptChange = (modelId: string, value: string) => {
+    setModelSystemPrompts((prev) => ({
+      ...prev,
+      [modelId]: value,
+    }));
   };
 
   useEffect(() => {
@@ -200,7 +264,7 @@ export const Dashboard: React.FC = () => {
               <div className="space-y-1">
                 <h3 className="text-xl font-semibold text-foreground">Setting Up Your Experiment</h3>
                 <p className="text-muted-foreground">
-                  Creating experiment with {selectedModelIds.length} models...
+                  Creating experiment with {selectedModelEntries.length} models...
                 </p>
               </div>
             </div>
@@ -259,7 +323,7 @@ export const Dashboard: React.FC = () => {
                     <span
                       className={cn(
                         "truncate text-left",
-                        selectedModelIds.length === 0 && "text-muted-foreground"
+                        selectedModelEntries.length === 0 && "text-muted-foreground"
                       )}
                     >
                       {modelsDropdownLabel}
@@ -278,8 +342,8 @@ export const Dashboard: React.FC = () => {
                   {models.map((model) => (
                     <DropdownMenuCheckboxItem
                       key={model.id}
-                      checked={selectedModelIds.includes(model.id)}
-                      onCheckedChange={() => handleModelToggle(model.id)}
+                      checked={false}
+                      onCheckedChange={() => handleAddModelEntry(model.id)}
                       onSelect={(e) => e.preventDefault()}
                     >
                       {`${model.provider} - ${model.name}`}
@@ -289,15 +353,70 @@ export const Dashboard: React.FC = () => {
               </DropdownMenu>
             )}
 
-            {selectedModelIds.length > 0 && (
+            {selectedModelEntries.length > 0 && (
               <div className="mt-3 text-sm text-primary">
-                ✓ {selectedModelIds.length} model{selectedModelIds.length !== 1 ? 's' : ''} selected
-                {selectedModelIds.length >= 2 && (
+                ✓ {selectedModelEntries.length} model{selectedModelEntries.length !== 1 ? 's' : ''} selected
+                {selectedModelEntries.length >= 2 && (
                   <span className="ml-2">
-                    ({(selectedModelIds.length * (selectedModelIds.length - 1)) / 2} pairwise
-                    experiment{(selectedModelIds.length * (selectedModelIds.length - 1)) / 2 !== 1 ? 's' : ''} will be created)
+                    ({(selectedModelEntries.length * (selectedModelEntries.length - 1)) / 2} pairwise
+                    experiment{(selectedModelEntries.length * (selectedModelEntries.length - 1)) / 2 !== 1 ? 's' : ''} will be created)
                   </span>
                 )}
+              </div>
+            )}
+            {selectedModels.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {selectedModels.map((model) => (
+                  <Button
+                    key={model.selectionId}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleRemoveModelEntry(model.selectionId)}
+                    disabled={isSubmitting}
+                  >
+                    {model.provider} - {model.displayName} ✕
+                  </Button>
+                ))}
+              </div>
+            )}
+
+            {selectedModels.length > 0 && (
+              <div className="mt-4 space-y-3 rounded-lg border border-border bg-muted/20 p-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">
+                    System Prompts
+                  </h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Add optional model-specific instructions for this experiment.
+                  </p>
+                </div>
+                <div className="space-y-4">
+                  {selectedModels.map((model) => (
+                    <div
+                      key={model.selectionId}
+                      className="rounded-lg border border-border bg-background p-3"
+                    >
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium text-foreground">
+                          {model.displayName}
+                        </span>
+                        <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-semibold text-secondary-foreground">
+                          {model.provider}
+                        </span>
+                      </div>
+                      <Textarea
+                        placeholder="e.g., Answer concisely and prioritize factual accuracy."
+                        value={modelSystemPrompts[model.id] ?? ""}
+                        onChange={(e) =>
+                          handleModelSystemPromptChange(model.id, e.target.value)
+                        }
+                        rows={3}
+                        disabled={isSubmitting}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -386,10 +505,10 @@ export const Dashboard: React.FC = () => {
           {/* Custom Questions */}
           <div className="border-t-2 border-border pt-6">
             <label className="block text-lg font-semibold text-foreground mb-3">
-              Additional Questions
+              Judge Evaluation Questions
             </label>
             <p className="text-sm text-muted-foreground mb-3">
-              Add at least one custom question that will be included in this experiment.
+              Add at least one custom question that will be included in this experiment. These questions will be used to evaluate the models.
             </p>
             <div className="space-y-3">
               {customQuestions.map((question, index) => (
@@ -437,7 +556,7 @@ export const Dashboard: React.FC = () => {
             size="lg"
             disabled={
               isSubmitting ||
-              selectedModelIds.length < 2 ||
+              selectedModelEntries.length < 2 ||
               !selectedPoolId ||
               !evaluationCriteria.trim() ||
               customQuestions.filter((question) => question.trim()).length === 0 ||

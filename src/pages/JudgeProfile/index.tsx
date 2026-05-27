@@ -1,154 +1,325 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Card, Toast } from "../../components";
-import type { JudgeProfile } from "../../types";
+import { Badge } from "../../components/ui/badge";
+import { Loader2 } from "lucide-react";
+import { useAuth } from "../../context/AuthContext";
+import {
+  getActiveExperiments,
+  getActiveJudgeExperiments,
+  getMe,
+  getMyTests,
+  getPreferences,
+  type BackendAuthMe,
+  type BackendExperiment,
+  type BackendPreference,
+  type BackendTest,
+} from "../../lib/authApi";
 
-// Dummy judge profile data
-const dummyJudgeProfile: JudgeProfile = {
-  id: "judge-1",
-  username: "judge_sarah",
-  email: "sarah.judge@example.com",
-  firstName: "Sarah",
-  lastName: "Johnson",
-  totalEvaluations: 47,
-  completedComparisons: 12,
-  averageRating: 4.8,
-  joinedDate: new Date("2024-01-01"),
-  lastActive: new Date("2024-01-20"),
+const ACCESS_TOKEN_KEY = "bt_access_token";
+
+const getAccessToken = () => {
+  const accessToken = localStorage.getItem(ACCESS_TOKEN_KEY);
+  if (!accessToken) {
+    throw new Error("Missing access token.");
+  }
+  return accessToken;
 };
 
-// Dummy evaluation history
-const dummyEvaluationHistory = [
-  {
-    id: "eval-1",
-    experimentTitle: "GPT-4 vs Claude 3 - Creative Writing",
-    date: new Date("2024-01-20"),
-    promptsEvaluated: 3,
-  },
-  {
-    id: "eval-2",
-    experimentTitle: "Gemini vs GPT-4 - Technical Analysis",
-    date: new Date("2024-01-19"),
-    promptsEvaluated: 5,
-  },
-  {
-    id: "eval-3",
-    experimentTitle: "Claude 3 vs PaLM - Code Generation",
-    date: new Date("2024-01-18"),
-    promptsEvaluated: 4,
-  },
-];
+const formatDateTime = (value: string) => new Date(value).toLocaleString();
+
+const ReadOnlyField: React.FC<{
+  label: string;
+  value: React.ReactNode;
+}> = ({ label, value }) => (
+  <div>
+    <p className="mb-1 text-sm font-medium text-foreground">{label}</p>
+    <div className="rounded-md border border-input bg-muted/30 px-3 py-2 text-foreground">
+      {value || "-"}
+    </div>
+  </div>
+);
 
 const JudgeProfilePage: React.FC = () => {
-  const [profile] = useState<JudgeProfile>(dummyJudgeProfile);
-  const [evaluationHistory] = useState(dummyEvaluationHistory);
+  const { user } = useAuth();
+  const [profile, setProfile] = useState<BackendAuthMe | null>(null);
+  const [myTests, setMyTests] = useState<BackendTest[]>([]);
+  const [myPreferences, setMyPreferences] = useState<BackendPreference[]>([]);
+  const [activeExperiments, setActiveExperiments] = useState<BackendExperiment[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [showToast, setShowToast] = useState(false);
-  const [toastMessage] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadProfile = async () => {
+      setIsLoading(true);
+      try {
+        const accessToken = getAccessToken();
+        const me = await getMe(accessToken);
+
+        const canUseJudgeScopedEndpoints = me.org_role === "JUDGE";
+        const [tests, preferences, experiments] = await Promise.all([
+          canUseJudgeScopedEndpoints ? getMyTests(accessToken) : Promise.resolve([]),
+          canUseJudgeScopedEndpoints ? getPreferences(accessToken) : Promise.resolve([]),
+          canUseJudgeScopedEndpoints
+            ? getActiveJudgeExperiments(accessToken).catch(() => [])
+            : getActiveExperiments(accessToken).catch(() => []),
+        ]);
+
+        if (!cancelled) {
+          setProfile(me);
+          setMyTests(tests);
+          setMyPreferences(preferences);
+          setActiveExperiments(experiments);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setToastMessage(
+            error instanceof Error ? error.message : "Judge profile could not be loaded."
+          );
+          setShowToast(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    void loadProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.organizationId]);
+
+  const experimentNameMap = useMemo(
+    () => Object.fromEntries(activeExperiments.map((experiment) => [experiment.id, experiment.name])),
+    [activeExperiments]
+  );
+
+  const preferenceCountByTest = useMemo(
+    () =>
+      myPreferences.reduce<Record<string, number>>((acc, preference) => {
+        acc[preference.test_id] = (acc[preference.test_id] || 0) + 1;
+        return acc;
+      }, {}),
+    [myPreferences]
+  );
+
+  const groupedHistory = useMemo(() => {
+    const grouped = myTests.reduce<
+      Record<
+        string,
+        {
+          experimentId: string;
+          experimentName: string;
+          promptsEvaluated: number;
+          lastEvaluatedAt: string;
+        }
+      >
+    >((acc, test) => {
+      const existing = acc[test.experiment_id];
+      const experimentName =
+        experimentNameMap[test.experiment_id] || `Experiment ${test.experiment_id.slice(0, 8)}`;
+
+      if (!existing) {
+        acc[test.experiment_id] = {
+          experimentId: test.experiment_id,
+          experimentName,
+          promptsEvaluated: 1,
+          lastEvaluatedAt: test.created_at,
+        };
+        return acc;
+      }
+
+      existing.promptsEvaluated += 1;
+      if (new Date(test.created_at).getTime() > new Date(existing.lastEvaluatedAt).getTime()) {
+        existing.lastEvaluatedAt = test.created_at;
+      }
+      return acc;
+    }, {});
+
+    return Object.values(grouped).sort(
+      (left, right) =>
+        new Date(right.lastEvaluatedAt).getTime() - new Date(left.lastEvaluatedAt).getTime()
+    );
+  }, [experimentNameMap, myTests]);
+
+  const latestTests = useMemo(
+    () =>
+      [...myTests]
+        .sort(
+          (left, right) =>
+            new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+        )
+        .slice(0, 8),
+    [myTests]
+  );
 
   return (
     <div className="space-y-8">
       {showToast && (
         <Toast
           message={toastMessage}
-          type="success"
+          type="error"
           onClose={() => setShowToast(false)}
         />
       )}
 
-      {/* Profile Header */}
-      <Card title="Judge Profile">
-        <div className="grid md:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">
-                First Name
-              </label>
-              <div className="px-3 py-2 border border-input rounded-md bg-muted/30 text-foreground">
-                {profile.firstName}
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">
-                Last Name
-              </label>
-              <div className="px-3 py-2 border border-input rounded-md bg-muted/30 text-foreground">
-                {profile.lastName}
-              </div>
-            </div>
+      {isLoading ? (
+        <Card>
+          <div className="py-12 text-center text-muted-foreground">
+            <Loader2 className="mx-auto mb-4 h-10 w-10 animate-spin" />
+            <p className="text-lg font-medium">Loading judge profile...</p>
           </div>
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">
-                Username
-              </label>
-              <div className="px-3 py-2 border border-input rounded-md bg-muted/30 text-foreground">
-                {profile.username}
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">
-                Email
-              </label>
-              <div className="px-3 py-2 border border-input rounded-md bg-muted/30 text-foreground">
-                {profile.email}
-              </div>
-            </div>
+        </Card>
+      ) : !profile ? (
+        <Card>
+          <div className="py-12 text-center text-muted-foreground">
+            <p>Judge profile information is unavailable.</p>
           </div>
-        </div>
-      </Card>
+        </Card>
+      ) : (
+        <>
+          <Card title="Judge Profile">
+            <div className="mb-6 flex flex-wrap items-center gap-3">
+              <Badge variant="secondary">Judge</Badge>
+              {user?.organizationName && (
+                <Badge variant="outline">{user.organizationName}</Badge>
+              )}
+              {profile.org_role !== "JUDGE" && (
+                <Badge variant="outline">Viewing with head access</Badge>
+              )}
+            </div>
 
-      {/* Statistics */}
-      <Card title="Evaluation Statistics">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="text-center">
-            <p className="text-3xl font-bold text-primary">
-              {profile.totalEvaluations}
-            </p>
-            <p className="text-sm text-muted-foreground">Total Evaluations</p>
-          </div>
-          <div className="text-center">
-            <p className="text-3xl font-bold text-primary">
-              {profile.completedComparisons}
-            </p>
-            <p className="text-sm text-muted-foreground">Completed Experiments</p>
-          </div>
-        </div>
-      </Card>
+            {profile.org_role !== "JUDGE" && (
+              <div className="mb-6 rounded-lg border border-border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                Judge-only activity details are limited because the current organization token
+                has `HEAD` permissions. Basic organization-scoped stats are still shown below.
+              </div>
+            )}
 
-      {/* Recent Evaluations */}
-      <Card title="Recent Evaluations">
-        <div className="space-y-4">
-          {evaluationHistory.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <p>No evaluations yet. Start judging to see your history!</p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <ReadOnlyField label="First Name" value={profile.name} />
+              <ReadOnlyField label="Last Name" value={profile.surname} />
+              <ReadOnlyField label="Email" value={profile.email} />
+              <ReadOnlyField label="Phone" value={profile.phone || "-"} />
+              <ReadOnlyField
+                label="Organization"
+                value={user?.organizationName || profile.organization_id}
+              />
+              <ReadOnlyField label="Org Role" value={profile.org_role} />
             </div>
-          ) : (
-            evaluationHistory.map((evaluation) => (
-              <div
-                key={evaluation.id}
-                className="border border-border rounded-lg p-4 hover:border-primary/50 transition-colors"
-              >
-                <div>
-                  <h3 className="text-lg font-semibold text-foreground mb-2">
-                    {evaluation.experimentTitle}
-                  </h3>
-                  <div className="text-sm text-muted-foreground space-y-1">
-                    <p>
-                      <strong>Date:</strong>{" "}
-                      {evaluation.date.toLocaleDateString()}
-                    </p>
-                    <p>
-                      <strong>Prompts Evaluated:</strong>{" "}
-                      {evaluation.promptsEvaluated}
-                    </p>
+          </Card>
+
+          <Card title="Organization Evaluation Overview">
+            <div className="grid gap-4 text-center md:grid-cols-4">
+              <div className="rounded-lg border border-border bg-muted/20 px-4 py-5">
+                <p className="text-3xl font-bold text-primary">
+                  {profile.tests_answered_in_organization}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Blind Tests Answered
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-muted/20 px-4 py-5">
+                <p className="text-3xl font-bold text-primary">{myPreferences.length}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Evaluation Decisions
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-muted/20 px-4 py-5">
+                <p className="text-3xl font-bold text-primary">
+                  {profile.experiments_participated}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Experiments Participated
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-muted/20 px-4 py-5">
+                <p className="text-3xl font-bold text-primary">
+                  {activeExperiments.length}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Active Experiments
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          <Card title="Recent Evaluation History">
+            {groupedHistory.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-muted-foreground">
+                No organization-scoped evaluation history found yet.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {groupedHistory.map((entry) => (
+                  <div
+                    key={entry.experimentId}
+                    className="rounded-lg border border-border bg-muted/20 p-4"
+                  >
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold text-foreground">
+                          {entry.experimentName}
+                        </h3>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Last evaluated: {formatDateTime(entry.lastEvaluatedAt)}
+                        </p>
+                      </div>
+                      <Badge variant="secondary">
+                        {entry.promptsEvaluated} blind test
+                        {entry.promptsEvaluated !== 1 ? "s" : ""}
+                      </Badge>
+                    </div>
                   </div>
-                </div>
+                ))}
               </div>
-            ))
-          )}
-        </div>
-      </Card>
+            )}
+          </Card>
 
+          <Card title="Latest Submitted Blind Tests">
+            {latestTests.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-muted-foreground">
+                No blind tests submitted yet for this organization.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {latestTests.map((test) => (
+                  <div
+                    key={test.id}
+                    className="rounded-lg border border-border bg-muted/20 px-4 py-4"
+                  >
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <p className="font-medium text-foreground">
+                          {experimentNameMap[test.experiment_id] ||
+                            `Experiment ${test.experiment_id.slice(0, 8)}`}
+                        </p>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Submitted: {formatDateTime(test.created_at)}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="outline">
+                          {preferenceCountByTest[test.id] || 0} decision
+                          {(preferenceCountByTest[test.id] || 0) !== 1 ? "s" : ""}
+                        </Badge>
+                        <Badge variant="outline">
+                          Test {test.id.slice(0, 8)}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
     </div>
   );
 };

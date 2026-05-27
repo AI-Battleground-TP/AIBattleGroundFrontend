@@ -16,7 +16,6 @@ import { Button as ShadcnButton } from "./ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -309,9 +308,6 @@ export const Navbar: React.FC = () => {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Switch Organization</DialogTitle>
-            <DialogDescription>
-              Aktif organization degistirildiginde yeni org token'i kullanilacak.
-            </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">

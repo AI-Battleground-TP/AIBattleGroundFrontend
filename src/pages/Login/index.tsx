@@ -27,6 +27,23 @@ type LoginStep = "credentials" | "organization";
 type SignupStep = "credentials" | "organization";
 type SignupOrgMode = "join" | "new";
 
+const mapSignupErrorMessage = (error: unknown, signupOrgMode: SignupOrgMode) => {
+  const fallbackMessage = "Sign up islemi basarisiz.";
+
+  if (!(error instanceof Error)) {
+    return fallbackMessage;
+  }
+
+  if (
+    signupOrgMode === "join" &&
+    error.message.trim() === "Email address already registered."
+  ) {
+    return "An account with this email already exists. If the organization ID was incorrect, log in and continue with the correct organization.";
+  }
+
+  return error.message;
+};
+
 export const Login: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -69,7 +86,6 @@ export const Login: React.FC = () => {
         loginEmail.trim().toLowerCase(),
         loginPassword.trim()
       );
-      const me = await getMe(tokenResponse.access_token);
       const organizations = await getMyOrganizations(tokenResponse.access_token);
 
       if (!organizations.length) {
@@ -78,7 +94,7 @@ export const Login: React.FC = () => {
       }
 
       setLoginAccessToken(tokenResponse.access_token);
-      setLoginDisplayName(`${me.name} ${me.surname}`.trim());
+      setLoginDisplayName(loginEmail.trim().toLowerCase());
       setLoginOrganizations(organizations);
       setSelectedOrgId(organizations[0].id);
       setLoginStep("organization");
@@ -239,9 +255,7 @@ export const Login: React.FC = () => {
 
       navigate(mappedRole === "judge" ? "/judge" : "/dashboard");
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : "Sign up islemi basarisiz."
-      );
+      setErrorMessage(mapSignupErrorMessage(error, signupOrgMode));
     } finally {
       setIsSubmitting(false);
     }
@@ -503,9 +517,6 @@ export const Login: React.FC = () => {
                     placeholder="Your new organization"
                     required
                   />
-                  <p className="text-sm text-muted-foreground">
-                    New organization olusturunca rolun otomatik olarak HEAD olur.
-                  </p>
                 </div>
               )}
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Button, Input, Card, Toast, Textarea, Modal } from "../../components";
 import { Badge } from "../../components/ui/badge";
 import {
@@ -63,6 +63,8 @@ export const QuestionPool: React.FC = () => {
     text: string;
     category: string;
   } | null>(null);
+  const [isDraggingCsv, setIsDraggingCsv] = useState(false);
+  const csvInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleAddQuestion = () => {
     if (!currentQuestion.trim()) {
@@ -86,25 +88,60 @@ export const QuestionPool: React.FC = () => {
     setQuestions(questions.filter(q => q.id !== id));
   };
 
+  const handleCSVFile = async (file: File) => {
+    try {
+      const parsedQuestions = await parseQuestionsCSV(file);
+      const newQuestions: Question[] = parsedQuestions.map((pq, idx) => ({
+        id: `q-${Date.now()}-${idx}`,
+        text: pq.text,
+        category: pq.category,
+      }));
+      setQuestions((prev) => [...prev, ...newQuestions]);
+      setToastMessage(`Added ${newQuestions.length} questions from CSV`);
+      setShowToast(true);
+    } catch (error) {
+      console.error("Error parsing CSV:", error);
+      setAlertMessage("Error parsing CSV file. Please check the format.");
+      setShowAlertToast(true);
+    } finally {
+      if (csvInputRef.current) {
+        csvInputRef.current.value = "";
+      }
+    }
+  };
+
   const handleCSVUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      try {
-        const parsedQuestions = await parseQuestionsCSV(file);
-        const newQuestions: Question[] = parsedQuestions.map((pq, idx) => ({
-          id: `q-${Date.now()}-${idx}`,
-          text: pq.text,
-          category: pq.category,
-        }));
-        setQuestions([...questions, ...newQuestions]);
-        setToastMessage(`Added ${newQuestions.length} questions from CSV`);
-        setShowToast(true);
-      } catch (error) {
-        console.error("Error parsing CSV:", error);
-        setAlertMessage("Error parsing CSV file. Please check the format.");
-        setShowAlertToast(true);
-      }
+      await handleCSVFile(file);
     }
+  };
+
+  const handleCsvDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDraggingCsv(true);
+  };
+
+  const handleCsvDragLeave = () => {
+    setIsDraggingCsv(false);
+  };
+
+  const handleCsvDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDraggingCsv(false);
+
+    const file = event.dataTransfer.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setAlertMessage("Please drop a .csv file.");
+      setShowAlertToast(true);
+      return;
+    }
+
+    await handleCSVFile(file);
   };
 
   const handleSavePool = async () => {
@@ -437,20 +474,35 @@ export const QuestionPool: React.FC = () => {
                 Or Upload CSV
               </label>
               <div className="flex items-center space-x-6">
-                <div className="flex-1 border-2 border-dashed border-input rounded-lg p-4 text-center">
+                <div
+                  className={`flex-1 rounded-lg border-2 border-dashed p-4 text-center transition-colors ${
+                    isDraggingCsv
+                      ? "border-primary bg-primary/5"
+                      : "border-input bg-transparent"
+                  }`}
+                  onDragOver={handleCsvDragOver}
+                  onDragLeave={handleCsvDragLeave}
+                  onDrop={handleCsvDrop}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      csvInputRef.current?.click();
+                    }
+                  }}
+                  onClick={() => csvInputRef.current?.click()}
+                >
                   <input
                     type="file"
                     accept=".csv"
                     onChange={handleCSVUpload}
                     className="hidden"
                     id="csv-upload"
+                    ref={csvInputRef}
                   />
-                  <label
-                    htmlFor="csv-upload"
-                    className="cursor-pointer text-primary hover:underline font-medium"
-                  >
-                    Click to upload CSV file
-                  </label>
+                  <p className="cursor-pointer font-medium text-primary">
+                    Drag & drop a CSV here, or click to upload
+                  </p>
                   <p className="text-sm text-muted-foreground mt-2">
                     CSV format: question, category (optional)
                   </p>

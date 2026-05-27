@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Card, Toast, Textarea } from "../../components";
 import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import { Alert, AlertDescription } from "../../components/ui/alert";
@@ -20,6 +20,140 @@ type TestSelections = Record<string, EvaluationOption>;
 type SavedEvaluation = Record<string, TestSelections>;
 type FeedbackEntry = { commentA: string; commentB: string };
 
+const renderInlineMarkdown = (text: string) => {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g);
+
+  return parts
+    .filter(Boolean)
+    .map((part, index) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
+      }
+
+      if (part.startsWith("`") && part.endsWith("`")) {
+        return (
+          <code
+            key={`${part}-${index}`}
+            className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.95em]"
+          >
+            {part.slice(1, -1)}
+          </code>
+        );
+      }
+
+      const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkMatch) {
+        return (
+          <a
+            key={`${part}-${index}`}
+            href={linkMatch[2]}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary underline underline-offset-2"
+          >
+            {linkMatch[1]}
+          </a>
+        );
+      }
+
+      return <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>;
+    });
+};
+
+const MarkdownResponse: React.FC<{ content: string }> = ({ content }) => {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
+  let paragraphLines: string[] = [];
+  let listItems: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+
+    const paragraphText = paragraphLines.join(" ").trim();
+    if (paragraphText) {
+      blocks.push(
+        <p key={`p-${blocks.length}`} className="leading-7 text-foreground">
+          {renderInlineMarkdown(paragraphText)}
+        </p>
+      );
+    }
+    paragraphLines = [];
+  };
+
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+
+    blocks.push(
+      <ul
+        key={`ul-${blocks.length}`}
+        className="list-disc space-y-2 pl-5 leading-7 text-foreground"
+      >
+        {listItems.map((item, index) => (
+          <li key={`${item}-${index}`}>{renderInlineMarkdown(item)}</li>
+        ))}
+      </ul>
+    );
+    listItems = [];
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+
+    if (/^(-{3,}|\*{3,})$/.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      blocks.push(<hr key={`hr-${blocks.length}`} className="border-border" />);
+      return;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+
+      const level = headingMatch[1].length;
+      const headingText = headingMatch[2];
+      const className =
+        level === 1
+          ? "text-lg font-semibold text-foreground"
+          : level === 2
+            ? "text-base font-semibold text-foreground"
+            : "text-sm font-semibold uppercase tracking-wide text-muted-foreground";
+
+      blocks.push(
+        <div key={`h-${blocks.length}`} className={className}>
+          {renderInlineMarkdown(headingText)}
+        </div>
+      );
+      return;
+    }
+
+    const listMatch = trimmed.match(/^([-*]|\d+\.)\s+(.*)$/);
+    if (listMatch) {
+      flushParagraph();
+      listItems.push(listMatch[2]);
+      return;
+    }
+
+    paragraphLines.push(trimmed);
+  });
+
+  flushParagraph();
+  flushList();
+
+  return <div className="space-y-4 text-sm">{blocks}</div>;
+};
+
 export const Judge: React.FC = () => {
   const { user } = useAuth();
   const [backendExperiments, setBackendExperiments] = useState<BackendExperiment[]>([]);
@@ -39,6 +173,8 @@ export const Judge: React.FC = () => {
   const [drawnTestsByExperiment, setDrawnTestsByExperiment] = useState<
     Record<string, BackendDrawBlindTestResponse[]>
   >({});
+  const responsesSectionRef = useRef<HTMLDivElement | null>(null);
+  const shouldScrollToResponsesRef = useRef(false);
 
   const selectedExperiment = useMemo(
     () => backendExperiments.find((experiment) => experiment.id === selectedExperimentId) || null,
@@ -129,6 +265,20 @@ export const Judge: React.FC = () => {
     loadExperiments();
   }, [user?.isHead]);
 
+  useEffect(() => {
+    if (!currentBlindTest || !shouldScrollToResponsesRef.current) {
+      return;
+    }
+
+    shouldScrollToResponsesRef.current = false;
+    requestAnimationFrame(() => {
+      responsesSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+  }, [currentBlindTest]);
+
   const openExperiment = async (experiment: BackendExperiment) => {
     setIsLoadingBlindTest(true);
     setAlertMessage("");
@@ -178,16 +328,6 @@ export const Judge: React.FC = () => {
       setShowAlertToast(true);
       return;
     }
-    const unsupportedSelections = Object.values(selections).some(
-      (value) => value !== "A" && value !== "B"
-    );
-    if (unsupportedSelections) {
-      setAlertMessage(
-        "The current backend preference endpoint only supports Model A or Model B selections."
-      );
-      setShowAlertToast(true);
-      return;
-    }
     if (evaluationQuestions.length === 0) {
       setAlertMessage("No evaluation questions found for this experiment.");
       setShowAlertToast(true);
@@ -196,8 +336,13 @@ export const Judge: React.FC = () => {
     setIsSavingPreference(true);
     try {
       const accessToken = getAccessToken();
+      const modelPreferenceQuestions = evaluationQuestions.filter((question) => {
+        const selection = selections[question.id];
+        return selection === "A" || selection === "B";
+      });
+
       await Promise.all(
-        evaluationQuestions.map((question) =>
+        modelPreferenceQuestions.map((question) =>
           createPreference(accessToken, {
             evaluation_question_id: question.id,
             test_id: currentTestId,
@@ -242,6 +387,7 @@ export const Judge: React.FC = () => {
     try {
       const accessToken = getAccessToken();
       const draw = await drawBlindTest(accessToken, selectedExperimentId);
+      shouldScrollToResponsesRef.current = true;
       setCurrentBlindTest(draw);
       appendDrawnTest(selectedExperimentId, draw);
       setShowToast(true);
@@ -424,16 +570,14 @@ export const Judge: React.FC = () => {
         </div>
       </Card>
 
-      <div className="space-y-6">
+      <div className="space-y-6" ref={responsesSectionRef}>
         <div className="grid md:grid-cols-2 gap-6">
           <Card>
             <div className="mb-4">
               <h3 className="text-xl font-semibold text-foreground mb-3">Model A</h3>
             </div>
-            <div className="p-4 rounded-lg border-2 border-border bg-muted/30">
-              <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap">
-                {currentBlindTest.response_a.model_response}
-              </p>
+            <div className="max-h-[42rem] overflow-y-auto rounded-lg border-2 border-border bg-muted/30 p-4">
+              <MarkdownResponse content={currentBlindTest.response_a.model_response} />
             </div>
 
             <div className="mt-4">
@@ -452,10 +596,8 @@ export const Judge: React.FC = () => {
             <div className="mb-4">
               <h3 className="text-xl font-semibold text-foreground mb-3">Model B</h3>
             </div>
-            <div className="p-4 rounded-lg border-2 border-border bg-muted/30">
-              <p className="text-muted-foreground leading-relaxed whitespace-pre-wrap">
-                {currentBlindTest.response_b.model_response}
-              </p>
+            <div className="max-h-[42rem] overflow-y-auto rounded-lg border-2 border-border bg-muted/30 p-4">
+              <MarkdownResponse content={currentBlindTest.response_b.model_response} />
             </div>
 
             <div className="mt-4">

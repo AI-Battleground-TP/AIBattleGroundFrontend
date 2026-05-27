@@ -16,7 +16,11 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
-import { dummyLeaderboard, dummyLeaderboardByCategory } from "../../utils/dummyData";
+import {
+  dummyLeaderboard,
+  dummyLeaderboardByCategory,
+  leaderboardCategories,
+} from "../../utils/dummyData";
 import type { LeaderboardEntry, LeaderboardCategory } from "../../types";
 
 type SortField = "eloRating" | "winRate" | "avgResponseTime" | "totalVotes";
@@ -75,11 +79,24 @@ export const Leaderboard: React.FC = () => {
 
   const categoryLabels: Record<LeaderboardCategory, string> = {
     all: "All Categories",
+    general: "General",
+    reasoning: "Reasoning",
+    coding: "Coding",
+    science: "Science",
     health: "Health",
-    sports: "Sports",
+    law: "Law",
+    finance: "Finance",
+    business: "Business",
+    education: "Education",
+    history: "History",
     mathematics: "Mathematics",
     philosophy: "Philosophy",
     religion: "Religion",
+    "creative-writing": "Creative Writing",
+    summarization: "Summarization",
+    translation: "Translation",
+    safety: "Safety",
+    sports: "Sports",
   };
 
   // Update leaderboard when category or sort changes
@@ -119,12 +136,11 @@ export const Leaderboard: React.FC = () => {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">{categoryLabels.all}</SelectItem>
-              <SelectItem value="health">{categoryLabels.health}</SelectItem>
-              <SelectItem value="sports">{categoryLabels.sports}</SelectItem>
-              <SelectItem value="mathematics">{categoryLabels.mathematics}</SelectItem>
-              <SelectItem value="philosophy">{categoryLabels.philosophy}</SelectItem>
-              <SelectItem value="religion">{categoryLabels.religion}</SelectItem>
+              {leaderboardCategories.map((category) => (
+                <SelectItem key={category} value={category}>
+                  {categoryLabels[category]}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>

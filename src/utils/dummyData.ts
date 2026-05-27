@@ -161,15 +161,38 @@ export const dummyLeaderboard: LeaderboardEntry[] = baseLeaderboard.map(entry =>
   category: "all" as any,
 }));
 
+export const leaderboardCategories = [
+  "all",
+  "general",
+  "reasoning",
+  "coding",
+  "mathematics",
+  "science",
+  "health",
+  "law",
+  "finance",
+  "business",
+  "education",
+  "history",
+  "philosophy",
+  "religion",
+  "creative-writing",
+  "summarization",
+  "translation",
+  "safety",
+  "sports",
+] as const;
+
 // Category-specific leaderboards
-export const dummyLeaderboardByCategory: Record<string, LeaderboardEntry[]> = {
-  all: dummyLeaderboard,
-  health: generateCategoryLeaderboard("health", baseLeaderboard),
-  sports: generateCategoryLeaderboard("sports", baseLeaderboard),
-  mathematics: generateCategoryLeaderboard("mathematics", baseLeaderboard),
-  philosophy: generateCategoryLeaderboard("philosophy", baseLeaderboard),
-  religion: generateCategoryLeaderboard("religion", baseLeaderboard),
-};
+export const dummyLeaderboardByCategory: Record<string, LeaderboardEntry[]> =
+  Object.fromEntries(
+    leaderboardCategories.map((category) => [
+      category,
+      category === "all"
+        ? dummyLeaderboard
+        : generateCategoryLeaderboard(category, baseLeaderboard),
+    ])
+  );
 
 export const dummyUser: User = {
   id: "user1",

@@ -18,6 +18,7 @@ import {
 } from "../../components/ui/table";
 import { ChevronDown, ChevronUp, ClipboardList, Loader2 } from "lucide-react";
 import {
+  deleteExperimentPreference,
   getEvaluationQuestionsByExperiment,
   getExperimentModelPreferenceSummary,
   getExperiments,
@@ -137,11 +138,14 @@ const extractRunSummary = (experiment: BackendExperiment) => {
   const totals = lastRun && isObjectRecord(lastRun.totals) ? lastRun.totals : null;
   const responsesSummary =
     metadata && isObjectRecord(metadata.responses_summary) ? metadata.responses_summary : null;
+  const hasTotalCost =
+    Boolean(responsesSummary) &&
+    Object.prototype.hasOwnProperty.call(responsesSummary, "total_cost_usd");
 
   return {
     successCount: toFiniteNumber(totals?.created, 0),
     failCount: toFiniteNumber(totals?.failed, 0),
-    totalCostUsd: toFiniteNumber(responsesSummary?.total_cost_usd, 0),
+    totalCostUsd: hasTotalCost ? toFiniteNumber(responsesSummary?.total_cost_usd, 0) : null,
   };
 };
 
@@ -184,6 +188,7 @@ export const Results: React.FC = () => {
   const [expandedFailureDetailsByExperiment, setExpandedFailureDetailsByExperiment] =
     useState<Record<string, boolean>>({});
   const [removingModelKey, setRemovingModelKey] = useState<string | null>(null);
+  const [deletingPreferenceId, setDeletingPreferenceId] = useState<string | null>(null);
 
   const getAccessToken = () => {
     const accessToken = localStorage.getItem("bt_access_token");
@@ -599,6 +604,31 @@ export const Results: React.FC = () => {
     }
   };
 
+  const handleDeletePreference = async (experimentId: string, preferenceId: string) => {
+    if (!window.confirm("Delete this recorded preference?")) {
+      return;
+    }
+
+    const accessToken = getAccessToken();
+    setDeletingPreferenceId(preferenceId);
+    try {
+      await deleteExperimentPreference(accessToken, preferenceId);
+      await loadOverview();
+      if (expandedExpId === experimentId) {
+        await loadExperimentDetail(experimentId);
+      }
+      setSuccessMessage("Preference deleted.");
+      setShowSuccessToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Preference could not be deleted."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setDeletingPreferenceId(null);
+    }
+  };
+
   const filteredExperiments = useMemo(() => {
     const loweredSearch = searchTerm.trim().toLowerCase();
     const items = experiments.filter((experiment) => {
@@ -889,7 +919,9 @@ export const Results: React.FC = () => {
                           <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
                             <p className="text-xs text-muted-foreground">Estimated Cost</p>
                             <p className="text-sm font-medium text-foreground">
-                              ${runSummary.totalCostUsd.toFixed(6)}
+                              {runSummary.totalCostUsd === null
+                                ? "Not available"
+                                : `$${runSummary.totalCostUsd.toFixed(6)}`}
                             </p>
                           </div>
                         </div>
@@ -1573,11 +1605,36 @@ export const Results: React.FC = () => {
                                                                     key={questionItem.id}
                                                                     className="rounded-lg border border-border/70 bg-background px-3 py-3 text-sm"
                                                                   >
-                                                                    <p className="text-muted-foreground">
-                                                                      {
-                                                                        questionItem.evaluation_question
-                                                                      }
-                                                                    </p>
+                                                                    <div className="flex items-start justify-between gap-2">
+                                                                      <p className="text-muted-foreground">
+                                                                        {
+                                                                          questionItem.evaluation_question
+                                                                        }
+                                                                      </p>
+                                                                      {matchingPreference && (
+                                                                        <Button
+                                                                          type="button"
+                                                                          size="sm"
+                                                                          variant="outline"
+                                                                          className="h-6 px-2 text-xs"
+                                                                          disabled={
+                                                                            deletingPreferenceId ===
+                                                                            matchingPreference.id
+                                                                          }
+                                                                          onClick={() =>
+                                                                            void handleDeletePreference(
+                                                                              experiment.id,
+                                                                              matchingPreference.id
+                                                                            )
+                                                                          }
+                                                                        >
+                                                                          {deletingPreferenceId ===
+                                                                          matchingPreference.id
+                                                                            ? "Deleting..."
+                                                                            : "Delete"}
+                                                                        </Button>
+                                                                      )}
+                                                                    </div>
                                                                     <p className="mt-1 font-medium text-foreground">
                                                                       {preferredModelName}
                                                                     </p>

@@ -823,6 +823,20 @@ export const getExperimentModelPreferenceSummary = (
     }
   );
 
+export const deleteExperimentPreference = (
+  accessToken: string,
+  preferenceId: string
+) =>
+  requestJson<{ message: string; deleted_preference_id: string }>(
+    `/experiments/preferences/${preferenceId}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
 export const removeModelFromExperiment = (
   accessToken: string,
   experimentId: string,

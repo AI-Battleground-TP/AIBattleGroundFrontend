@@ -6,6 +6,7 @@ export { Leaderboard } from "./Leaderboard";
 export { Guidelines } from "./Guidelines";
 export { UserProfilePage as UserProfile } from "./UserProfile";
 export { JudgeProfile } from "./JudgeProfile";
+export { Judges } from "./Judges";
 export { Models } from "./Models";
 export { QuestionPool } from "./QuestionPool";
 export { Results } from "./Results";

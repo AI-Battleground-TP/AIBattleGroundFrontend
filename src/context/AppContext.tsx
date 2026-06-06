@@ -390,7 +390,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const created = await createExperimentRequest(accessToken, {
       name: experiment.title,
       evaluation_criteria: experiment.evaluationCriteria?.trim() || undefined,
-      status: "DRAFT",
+      status: "in_progress",
       input_pool_id: experiment.questionPoolId,
       organization_id: organizationId,
       model_ids: experiment.selectedModels.map((model) => model.id),
@@ -438,7 +438,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       ...experiment,
       id: created.id,
       createdAt: new Date(created.created_at),
-      status: "in-progress",
+      status: "in_progress",
     };
 
     setExperiments((prev) => [newExperiment, ...prev]);

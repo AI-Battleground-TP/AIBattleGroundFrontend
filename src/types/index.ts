@@ -137,7 +137,7 @@ export interface ModelPair {
   model2: Model;
   prompts: string[];
   createdAt: Date;
-  status: "pending" | "in-progress" | "completed";
+  status: "pending" | "in_progress" | "completed";
   totalEvaluations?: number;
   completedEvaluations?: number;
 }
@@ -177,7 +177,7 @@ export interface Experiment {
   questionPoolName: string;
   selectedModels: ModelPoolItem[];
   createdAt: Date;
-  status: "in-progress" | "completed";
+  status: "in_progress" | "completed";
   comparisons?: ExperimentComparison[];
   // New fields
   evaluationCriteria?: string; // Notes for judges on how to evaluate

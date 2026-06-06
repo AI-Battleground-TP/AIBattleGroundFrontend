@@ -26,7 +26,7 @@ export const Welcome: React.FC = () => {
         </p>
         <p className="text-xl text-muted-foreground mb-8 leading-relaxed">
           Compare and evaluate Large Language Models (LLMs) through blind
-          testing. Upload your models, create prompts, and let judges evaluate
+          testing. Upload your models, create question pools, and let judges evaluate
           responses anonymously to discover which models truly perform best.
         </p>
 
@@ -40,7 +40,7 @@ export const Welcome: React.FC = () => {
               <h3 className="text-lg font-semibold mb-2">Submit Models</h3>
               <p className="text-muted-foreground">
                 Users upload their LLM models via API keys and provide test
-                prompts
+                question pools
               </p>
             </div>
             <div className="bg-card text-card-foreground p-6 rounded-lg shadow-sm">

@@ -10,6 +10,7 @@ import {
   Guidelines,
   UserProfile,
   JudgeProfile,
+  Judges,
   Models,
   QuestionPool,
   Results,
@@ -19,7 +20,8 @@ import { useAuth } from "../context/AuthContext";
 const ProtectedRoute: React.FC<{
   children: React.ReactNode;
   requiredRole?: "user" | "judge";
-}> = ({ children, requiredRole }) => {
+  requiresHead?: boolean;
+}> = ({ children, requiredRole, requiresHead }) => {
   const { user } = useAuth();
 
   if (!user) {
@@ -33,6 +35,10 @@ const ProtectedRoute: React.FC<{
     return (
       <Navigate to={user.role === "user" ? "/dashboard" : "/judge"} replace />
     );
+  }
+
+  if (requiresHead && !user.isHead) {
+    return <Navigate to={user.role === "user" ? "/dashboard" : "/judge"} replace />;
   }
 
   return <>{children}</>;
@@ -101,6 +107,14 @@ export const AppRouter: React.FC = () => {
             element={
               <ProtectedRoute requiredRole="user">
                 <Results />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/judges"
+            element={
+              <ProtectedRoute requiresHead>
+                <Judges />
               </ProtectedRoute>
             }
           />

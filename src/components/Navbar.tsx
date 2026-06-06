@@ -176,6 +176,17 @@ export const Navbar: React.FC = () => {
                       Results
                     </Button>
                   </Link>
+                  {user.isHead && (
+                    <Link to="/judges">
+                      <Button
+                        size="sm"
+                        variant={isActive("/judges") ? "secondary" : "ghost"}
+                        className="px-2"
+                      >
+                        Judges
+                      </Button>
+                    </Link>
+                  )}
                 </>
               )}
               {user && user.role === "judge" && (

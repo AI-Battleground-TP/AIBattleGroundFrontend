@@ -121,7 +121,7 @@ export const Dashboard: React.FC = () => {
         questionPoolId: selectedPool.id,
         questionPoolName: selectedPool.name,
         selectedModels: selectedModels,
-        status: "in-progress",
+        status: "in_progress",
         evaluationCriteria: evaluationCriteria.trim() || undefined,
         customQuestions: customQuestionObjects.length > 0 ? customQuestionObjects : undefined,
         modelSystemPrompts,

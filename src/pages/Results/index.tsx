@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, Card, Input, Toast } from "../../components";
+import { useApp } from "../../context/AppContext";
 import { Badge } from "../../components/ui/badge";
 import {
   Select,
@@ -20,7 +21,10 @@ import { ChevronDown, ChevronUp, ClipboardList, Loader2 } from "lucide-react";
 import {
   deleteExperimentPreference,
   getEvaluationQuestionsByExperiment,
+  getExperimentModelAppearanceSummary,
   getExperimentModelPreferenceSummary,
+  getExperimentModelRatings,
+  getExperimentModelTokenUsage,
   getExperiments,
   getInputPools,
   getModels,
@@ -29,9 +33,14 @@ import {
   getResponsesByQuestion,
   getTestsByExperiment,
   removeModelFromExperiment,
+  retryExperimentModelResponses,
   type BackendEvaluationQuestion,
   type BackendExperiment,
+  type BackendExperimentModelAppearanceSummary,
+  type BackendExperimentModelRatingRow,
+  type BackendExperimentModelRatingsSummary,
   type BackendExperimentModelPreferenceSummary,
+  type BackendExperimentModelTokenUsageSummary,
   type BackendInputPool,
   type BackendModel,
   type BackendPreference,
@@ -42,6 +51,9 @@ import {
 
 type ExperimentResultDetail = {
   summary: BackendExperimentModelPreferenceSummary;
+  ratings: BackendExperimentModelRatingsSummary | null;
+  appearanceByModel: Record<string, BackendExperimentModelAppearanceSummary>;
+  tokenUsage: BackendExperimentModelTokenUsageSummary | null;
   tests: BackendTest[];
   evaluationQuestions: BackendEvaluationQuestion[];
   questionMap: Record<string, BackendQuestion>;
@@ -50,7 +62,8 @@ type ExperimentResultDetail = {
 };
 
 type SortOption = "newest" | "most-preferences";
-type StatusFilter = "ALL" | "DRAFT" | "ACTIVE" | "COMPLETED";
+type StatusFilter = "ALL" | "IN_PROGRESS" | "COMPLETED";
+type ResultTab = "overview" | "pairwise" | "questions" | "diagnostics";
 
 type QuestionGrouping = {
   questionId: string;
@@ -58,6 +71,8 @@ type QuestionGrouping = {
   testIds: string[];
   preferenceCount: number;
   modelCounts: Record<string, number>;
+  bothGoodCount: number;
+  bothPoorCount: number;
 };
 
 type EvaluationQuestionSummary = {
@@ -65,13 +80,23 @@ type EvaluationQuestionSummary = {
   evaluationQuestionText: string;
   totalPreferences: number;
   modelCounts: Record<string, number>;
+  bothGoodCount: number;
+  bothPoorCount: number;
 };
 
 type ModelBreakdown = {
   modelId: string;
   modelName: string;
+  eloRating: number | null;
   totalWins: number;
   totalMatchups: number;
+  ratingGamesPlayed: number;
+  ratingWins: number;
+  ratingLosses: number;
+  ratingDraws: number;
+  qualityPenalty: number;
+  backendAppearanceCount: number;
+  backendSelectionRate: number;
   criteriaBreakdown: Array<{
     evaluationQuestionId: string;
     evaluationQuestionText: string;
@@ -97,6 +122,13 @@ type FailedResponseDetail = {
   error?: string;
 };
 
+type FailedModelState = {
+  modelId: string;
+  failedQuestionIds: string[];
+  totalFailCount: number;
+  retryStatus: "idle" | "in_progress";
+};
+
 const createEmptySummary = (
   experimentId: string
 ): BackendExperimentModelPreferenceSummary => ({
@@ -108,6 +140,62 @@ const createEmptySummary = (
   top_preferred_model_ids: [],
   top_preference_count: 0,
 });
+
+const createEmptyRatingsSummary = (
+  experimentId: string
+): BackendExperimentModelRatingsSummary => ({
+  experiment_id: experimentId,
+  initial_rating: 1000,
+  k_factor: 0,
+  both_poor_penalty: 0,
+  model_ratings: [],
+});
+
+const createEmptyTokenUsageSummary = (
+  experimentId: string
+): BackendExperimentModelTokenUsageSummary => ({
+  experiment_id: experimentId,
+  total_responses: 0,
+  prompt_tokens: 0,
+  completion_tokens: 0,
+  total_tokens: 0,
+  reasoning_tokens: null,
+  cached_tokens: null,
+  total_cost_usd: null,
+  model_breakdown: [],
+});
+
+const isEmptyPreferenceSummary = (summary: BackendExperimentModelPreferenceSummary) =>
+  summary.total_tests === 0 &&
+  summary.total_preferences === 0 &&
+  summary.model_breakdown.length === 0;
+
+const getDetailPreferenceCount = (detail?: ExperimentResultDetail) => {
+  if (!detail) {
+    return 0;
+  }
+
+  if (detail.summary.total_preferences > 0) {
+    return detail.summary.total_preferences;
+  }
+
+  return Object.values(detail.preferencesByTest).reduce(
+    (sum, preferences) => sum + preferences.length,
+    0
+  );
+};
+
+const getDetailTestCount = (detail?: ExperimentResultDetail) => {
+  if (!detail) {
+    return 0;
+  }
+
+  if (detail.summary.total_tests > 0) {
+    return detail.summary.total_tests;
+  }
+
+  return detail.tests.length;
+};
 
 const getPairKey = (modelAId: string, modelBId: string) =>
   [modelAId, modelBId].sort().join("::");
@@ -125,6 +213,78 @@ const getPercentage = (value: number, total: number) =>
 
 const formatPercentage = (value: number) =>
   `${value % 1 === 0 ? value.toFixed(0) : value.toFixed(1)}%`;
+
+const formatRatioAsPercentage = (value: number) => formatPercentage(value * 100);
+
+const formatEloRating = (value: number | null | undefined) =>
+  value === null || value === undefined ? "Not rated yet" : Math.round(value).toString();
+
+const formatInteger = (value: number) => new Intl.NumberFormat().format(value);
+
+const formatUsd = (value: number | null | undefined) =>
+  value === null || value === undefined ? "unknown cost" : `$${value.toFixed(2)}`;
+
+const normalizeExperimentStatus = (status: string) => {
+  const lowered = status.toLowerCase();
+  if (lowered === "in-progress" || lowered === "in_progress" || lowered === "active") {
+    return "IN_PROGRESS";
+  }
+  if (lowered === "completed") {
+    return "COMPLETED";
+  }
+  return status.toUpperCase();
+};
+
+const formatExperimentStatus = (status: string) => {
+  const normalized = normalizeExperimentStatus(status);
+  if (normalized === "IN_PROGRESS") {
+    return "In progress";
+  }
+  if (normalized === "COMPLETED") {
+    return "Completed";
+  }
+  return status;
+};
+
+const getPreferenceOutcomeLabel = (
+  preference: BackendPreference | undefined,
+  detail: ExperimentResultDetail,
+  test?: BackendTest
+) => {
+  if (!preference) {
+    return "No preference saved";
+  }
+
+  if (preference.is_both_good || preference.result_type === "both_good") {
+    return "Both Good";
+  }
+
+  if (preference.is_both_poor || preference.result_type === "both_poor") {
+    return "Both Poor";
+  }
+
+  if (!preference.preferred_model_id) {
+    return "No winner recorded";
+  }
+
+  if (test) {
+    if (preference.preferred_model_id === test.model_a_id) {
+      return getModelNameStatic(test.model_a_id, detail);
+    }
+    if (preference.preferred_model_id === test.model_b_id) {
+      return getModelNameStatic(test.model_b_id, detail);
+    }
+  }
+
+  return getModelNameStatic(preference.preferred_model_id, detail);
+};
+
+const getModelNameStatic = (modelId: string, detail?: ExperimentResultDetail) =>
+  detail?.summary.model_breakdown.find((row) => row.model_id === modelId)?.model_name ||
+  detail?.ratings?.model_ratings.find((row) => row.model_id === modelId)?.model_name ||
+  detail?.tokenUsage?.model_breakdown.find((row) => row.model_id === modelId)?.model_name ||
+  detail?.appearanceByModel[modelId]?.model_name ||
+  "Unknown Model";
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -163,7 +323,82 @@ const extractRecentFailures = (experiment: BackendExperiment) => {
   }));
 };
 
+const extractFailedModels = (experiment: BackendExperiment): FailedModelState[] => {
+  const metadata = isObjectRecord(experiment.metadata_json) ? experiment.metadata_json : null;
+  const failedModels = metadata && Array.isArray(metadata.failed_models) ? metadata.failed_models : [];
+
+  return failedModels
+    .filter(isObjectRecord)
+    .map((item) => ({
+      modelId: typeof item.model_id === "string" ? item.model_id : "",
+      failedQuestionIds: Array.isArray(item.failed_question_ids)
+        ? item.failed_question_ids.filter((entry): entry is string => typeof entry === "string")
+        : [],
+      totalFailCount:
+        typeof item.total_fail_count === "number"
+          ? item.total_fail_count
+          : Array.isArray(item.failed_question_ids)
+            ? item.failed_question_ids.length
+            : 0,
+      retryStatus: item.retry_status === "in_progress" ? "in_progress" : "idle",
+    }))
+    .filter((item) => item.modelId);
+};
+
+const buildMissingQuestionFallback = (questionId: string): BackendQuestion => ({
+  id: questionId,
+  input_pool_id: "",
+  category: null,
+  text: "Question text could not be loaded.",
+  type: "unknown",
+  metadata_json: null,
+});
+
+const loadAppearanceSummaryMap = async (
+  accessToken: string,
+  experimentId: string,
+  modelRows: Array<{ model_id: string; model_name: string }>
+) => {
+  const settled = await Promise.allSettled(
+    modelRows.map(async (row) => [
+      row.model_id,
+      await getExperimentModelAppearanceSummary(accessToken, experimentId, row.model_id),
+    ] as const)
+  );
+
+  return Object.fromEntries(
+    settled.flatMap((entry, index) => {
+      if (entry.status === "fulfilled") {
+        return [entry.value];
+      }
+
+      const row = modelRows[index];
+      if (!row) {
+        return [];
+      }
+
+      return [
+        [
+          row.model_id,
+          {
+            experiment_id: experimentId,
+            model_id: row.model_id,
+            model_name: row.model_name,
+            appearance_count: 0,
+            selected_count: 0,
+            not_selected_count: 0,
+            both_good_count: 0,
+            both_poor_count: 0,
+            selection_rate: 0,
+          } satisfies BackendExperimentModelAppearanceSummary,
+        ] as const,
+      ];
+    })
+  );
+};
+
 export const Results: React.FC = () => {
+  const { experiments: appExperiments } = useApp();
   const [experiments, setExperiments] = useState<BackendExperiment[]>([]);
   const [models, setModels] = useState<BackendModel[]>([]);
   const [inputPools, setInputPools] = useState<BackendInputPool[]>([]);
@@ -178,6 +413,9 @@ export const Results: React.FC = () => {
   >({});
   const [isLoadingOverview, setIsLoadingOverview] = useState(true);
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
+  const [loadingQuestionResponsesId, setLoadingQuestionResponsesId] = useState<string | null>(
+    null
+  );
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [sortBy, setSortBy] = useState<SortOption>("newest");
@@ -185,10 +423,12 @@ export const Results: React.FC = () => {
   const [showAlertToast, setShowAlertToast] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [showSuccessToast, setShowSuccessToast] = useState(false);
-  const [expandedFailureDetailsByExperiment, setExpandedFailureDetailsByExperiment] =
-    useState<Record<string, boolean>>({});
   const [removingModelKey, setRemovingModelKey] = useState<string | null>(null);
   const [deletingPreferenceId, setDeletingPreferenceId] = useState<string | null>(null);
+  const [retryingModelKey, setRetryingModelKey] = useState<string | null>(null);
+  const [expandedResultTabByExperiment, setExpandedResultTabByExperiment] = useState<
+    Record<string, ResultTab>
+  >({});
 
   const getAccessToken = () => {
     const accessToken = localStorage.getItem("bt_access_token");
@@ -208,14 +448,31 @@ export const Results: React.FC = () => {
     [inputPools]
   );
 
+  const appExperimentMap = useMemo(
+    () => Object.fromEntries(appExperiments.map((experiment) => [experiment.id, experiment])),
+    [appExperiments]
+  );
+
   const getModelName = (modelId: string, detail?: ExperimentResultDetail) =>
     modelMap[modelId]?.name ||
     detail?.summary.model_breakdown.find((row) => row.model_id === modelId)?.model_name ||
+    detail?.tokenUsage?.model_breakdown.find((row) => row.model_id === modelId)?.model_name ||
+    detail?.ratings?.model_ratings.find((row) => row.model_id === modelId)?.model_name ||
+    detail?.appearanceByModel[modelId]?.model_name ||
     "Unknown Model";
 
-  const getExperimentModelNames = (detail?: ExperimentResultDetail) => {
+  const getExperimentModelIds = (
+    experiment: BackendExperiment,
+    detail?: ExperimentResultDetail
+  ) => {
     if (!detail) {
-      return [];
+      const appExperiment = appExperimentMap[experiment.id];
+      return [
+        ...new Set([
+          ...extractFailedModels(experiment).map((item) => item.modelId),
+          ...(appExperiment?.selectedModels.map((model) => model.id) || []),
+        ]),
+      ];
     }
 
     const modelIds = new Set<string>();
@@ -229,14 +486,124 @@ export const Results: React.FC = () => {
       modelIds.add(row.model_id);
     });
 
-    return [...modelIds].map((modelId) => getModelName(modelId, detail));
+    const appExperiment = appExperimentMap[experiment.id];
+    appExperiment?.selectedModels.forEach((model) => {
+      modelIds.add(model.id);
+    });
+
+    detail.ratings?.model_ratings.forEach((row) => {
+      modelIds.add(row.model_id);
+    });
+
+    detail.tokenUsage?.model_breakdown.forEach((row) => {
+      modelIds.add(row.model_id);
+    });
+
+    Object.keys(detail.appearanceByModel).forEach((modelId) => {
+      modelIds.add(modelId);
+    });
+
+    extractFailedModels(experiment).forEach((item) => {
+      modelIds.add(item.modelId);
+    });
+
+    return [...modelIds];
   };
 
-  const buildExperimentAnalysis = (detail: ExperimentResultDetail) => {
+  const getExperimentModelNames = (experiment: BackendExperiment, detail?: ExperimentResultDetail) =>
+    getExperimentModelIds(experiment, detail).map((modelId) => getModelName(modelId, detail));
+
+  const getDisplayModelRows = (experiment: BackendExperiment, detail?: ExperimentResultDetail) => {
+    const uniqueIds = getExperimentModelIds(experiment, detail);
+    const appExperiment = appExperimentMap[experiment.id];
+    const normalizedStatus = normalizeExperimentStatus(experiment.status);
+
+    return uniqueIds
+      .map((modelId) => {
+        const ratingRow = detail?.ratings?.model_ratings.find((row) => row.model_id === modelId);
+        const tokenRow = detail?.tokenUsage?.model_breakdown.find((row) => row.model_id === modelId);
+        const failedState = extractFailedModels(experiment).find((item) => item.modelId === modelId);
+        const appModel = appExperiment?.selectedModels.find((model) => model.id === modelId);
+        const appearanceRow = detail?.appearanceByModel[modelId];
+        const appearsInTests =
+          detail?.tests.some((test) => test.model_a_id === modelId || test.model_b_id === modelId) ||
+          false;
+        const hasSummaryVotes =
+          detail?.summary.model_breakdown.some((row) => row.model_id === modelId) || false;
+        const hasAppearanceSignal = Boolean(
+          appearanceRow &&
+            (appearanceRow.appearance_count > 0 ||
+              appearanceRow.selected_count > 0 ||
+              appearanceRow.not_selected_count > 0 ||
+              appearanceRow.both_good_count > 0 ||
+              appearanceRow.both_poor_count > 0)
+        );
+        const hasTokenSignal = Boolean(tokenRow && tokenRow.response_count > 0);
+        const hasRatingSignal = Boolean(
+          ratingRow &&
+            (ratingRow.games_played > 0 ||
+              ratingRow.wins > 0 ||
+              ratingRow.losses > 0 ||
+              ratingRow.draws > 0 ||
+              ratingRow.both_good_count > 0 ||
+              ratingRow.both_poor_count > 0)
+        );
+        const isMeaningfullyParticipating =
+          appearsInTests ||
+          hasSummaryVotes ||
+          hasAppearanceSignal ||
+          hasTokenSignal ||
+          hasRatingSignal ||
+          Boolean(failedState) ||
+          Boolean(appModel);
+
+        return {
+          modelId,
+          modelName: appModel?.name || getModelName(modelId, detail),
+          eloRating: ratingRow?.rating ?? null,
+          selectionRate: appearanceRow?.selection_rate ?? 0,
+          totalTokens: tokenRow?.total_tokens ?? 0,
+          promptTokens: tokenRow?.prompt_tokens ?? 0,
+          completionTokens: tokenRow?.completion_tokens ?? 0,
+          responseCount: tokenRow?.response_count ?? 0,
+          failedState,
+          isMeaningfullyParticipating,
+        };
+      })
+      .filter((row) =>
+        normalizedStatus === "COMPLETED" ? row.isMeaningfullyParticipating : true
+      )
+      .sort((a, b) => {
+        const ratingDiff = (b.eloRating ?? -Infinity) - (a.eloRating ?? -Infinity);
+        if (ratingDiff !== 0) {
+          return ratingDiff;
+        }
+        const tokenDiff = b.totalTokens - a.totalTokens;
+        if (tokenDiff !== 0) {
+          return tokenDiff;
+        }
+        return a.modelName.localeCompare(b.modelName);
+      });
+  };
+
+  const buildExperimentAnalysis = (
+    experiment: BackendExperiment,
+    detail: ExperimentResultDetail
+  ) => {
     const questionGroupingMap = new Map<string, QuestionGrouping>();
     const evaluationQuestionSummaryMap = new Map<string, EvaluationQuestionSummary>();
     const headToHeadMap = new Map<string, HeadToHeadEntry>();
+    const allowedModelIds = new Set(
+      getDisplayModelRows(experiment, detail).map((row) => row.modelId)
+    );
     const modelIds = new Set<string>();
+    const ratingMap = new Map<string, BackendExperimentModelRatingRow>();
+
+    detail.ratings?.model_ratings.forEach((row) => {
+      if (allowedModelIds.has(row.model_id)) {
+        ratingMap.set(row.model_id, row);
+      }
+    });
 
     detail.evaluationQuestions.forEach((question) => {
       evaluationQuestionSummaryMap.set(question.id, {
@@ -244,10 +611,18 @@ export const Results: React.FC = () => {
         evaluationQuestionText: question.evaluation_question,
         totalPreferences: 0,
         modelCounts: {},
+        bothGoodCount: 0,
+        bothPoorCount: 0,
       });
     });
 
     detail.tests.forEach((test) => {
+      if (
+        !allowedModelIds.has(test.model_a_id) ||
+        !allowedModelIds.has(test.model_b_id)
+      ) {
+        return;
+      }
       modelIds.add(test.model_a_id);
       modelIds.add(test.model_b_id);
 
@@ -258,6 +633,8 @@ export const Results: React.FC = () => {
         testIds: [],
         preferenceCount: 0,
         modelCounts: {},
+        bothGoodCount: 0,
+        bothPoorCount: 0,
       };
 
       grouping.testIds.push(test.id);
@@ -265,8 +642,10 @@ export const Results: React.FC = () => {
       const preferences = detail.preferencesByTest[test.id] || [];
       preferences.forEach((preference) => {
         grouping.preferenceCount += 1;
-        grouping.modelCounts[preference.preferred_model_id] =
-          (grouping.modelCounts[preference.preferred_model_id] || 0) + 1;
+        if (preference.preferred_model_id) {
+          grouping.modelCounts[preference.preferred_model_id] =
+            (grouping.modelCounts[preference.preferred_model_id] || 0) + 1;
+        }
 
         const evalSummary =
           evaluationQuestionSummaryMap.get(preference.evaluation_question_id) || {
@@ -277,11 +656,23 @@ export const Results: React.FC = () => {
               )?.evaluation_question || "Unknown Evaluation Question",
             totalPreferences: 0,
             modelCounts: {},
+            bothGoodCount: 0,
+            bothPoorCount: 0,
           };
 
         evalSummary.totalPreferences += 1;
-        evalSummary.modelCounts[preference.preferred_model_id] =
-          (evalSummary.modelCounts[preference.preferred_model_id] || 0) + 1;
+        if (preference.is_both_good || preference.result_type === "both_good") {
+          grouping.bothGoodCount += 1;
+          evalSummary.bothGoodCount += 1;
+        }
+        if (preference.is_both_poor || preference.result_type === "both_poor") {
+          grouping.bothPoorCount += 1;
+          evalSummary.bothPoorCount += 1;
+        }
+        if (preference.preferred_model_id) {
+          evalSummary.modelCounts[preference.preferred_model_id] =
+            (evalSummary.modelCounts[preference.preferred_model_id] || 0) + 1;
+        }
         evaluationQuestionSummaryMap.set(preference.evaluation_question_id, evalSummary);
       });
 
@@ -308,7 +699,21 @@ export const Results: React.FC = () => {
     });
 
     detail.summary.model_breakdown.forEach((row) => {
-      modelIds.add(row.model_id);
+      if (allowedModelIds.has(row.model_id)) {
+        modelIds.add(row.model_id);
+      }
+    });
+
+    detail.ratings?.model_ratings.forEach((row) => {
+      if (allowedModelIds.has(row.model_id)) {
+        modelIds.add(row.model_id);
+      }
+    });
+
+    detail.tokenUsage?.model_breakdown.forEach((row) => {
+      if (allowedModelIds.has(row.model_id)) {
+        modelIds.add(row.model_id);
+      }
     });
 
     const evaluationQuestionSummaries = [...evaluationQuestionSummaryMap.values()].sort(
@@ -350,12 +755,26 @@ export const Results: React.FC = () => {
         return {
           modelId,
           modelName: getModelName(modelId, detail),
+          eloRating: ratingMap.get(modelId)?.rating ?? null,
           totalWins,
           totalMatchups,
+          ratingGamesPlayed: ratingMap.get(modelId)?.games_played || 0,
+          ratingWins: ratingMap.get(modelId)?.wins || 0,
+          ratingLosses: ratingMap.get(modelId)?.losses || 0,
+          ratingDraws: ratingMap.get(modelId)?.draws || 0,
+          qualityPenalty: ratingMap.get(modelId)?.quality_penalty || 0,
+          backendAppearanceCount: detail.appearanceByModel[modelId]?.appearance_count || 0,
+          backendSelectionRate: detail.appearanceByModel[modelId]?.selection_rate || 0,
           criteriaBreakdown,
         } satisfies ModelBreakdown;
       })
-      .sort((a, b) => b.totalWins - a.totalWins);
+      .sort((a, b) => {
+        const ratingDiff = (b.eloRating ?? -Infinity) - (a.eloRating ?? -Infinity);
+        if (ratingDiff !== 0) {
+          return ratingDiff;
+        }
+        return b.totalWins - a.totalWins || b.backendAppearanceCount - a.backendAppearanceCount;
+      });
 
     const questionGroups = [...questionGroupingMap.values()].sort(
       (a, b) => b.preferenceCount - a.preferenceCount
@@ -365,9 +784,14 @@ export const Results: React.FC = () => {
       (a, b) => a.modelAId.localeCompare(b.modelAId) || a.modelBId.localeCompare(b.modelBId)
     );
 
-    const matrixModelIds = [...modelIds].sort((a, b) =>
-      getModelName(a, detail).localeCompare(getModelName(b, detail))
-    );
+    const matrixModelIds = [...modelIds].sort((a, b) => {
+      const ratingA = ratingMap.get(a)?.rating ?? -Infinity;
+      const ratingB = ratingMap.get(b)?.rating ?? -Infinity;
+      if (ratingA !== ratingB) {
+        return ratingB - ratingA;
+      }
+      return getModelName(a, detail).localeCompare(getModelName(b, detail));
+    });
 
     return {
       questionGroups,
@@ -391,16 +815,62 @@ export const Results: React.FC = () => {
       const overviewEntries = await Promise.all(
         experimentRows.map(async (experiment) => {
           try {
-            const [summary, tests, evaluationQuestions] = await Promise.all([
-              getExperimentModelPreferenceSummary(accessToken, experiment.id),
-              getTestsByExperiment(accessToken, experiment.id),
-              getEvaluationQuestionsByExperiment(accessToken, experiment.id),
-            ]);
+            const [
+              summaryResult,
+              ratingsResult,
+              tokenUsageResult,
+              testsResult,
+              evaluationQuestionsResult,
+            ] =
+              await Promise.allSettled([
+                getExperimentModelPreferenceSummary(accessToken, experiment.id),
+                getExperimentModelRatings(accessToken, experiment.id),
+                getExperimentModelTokenUsage(accessToken, experiment.id),
+                getTestsByExperiment(accessToken, experiment.id),
+                getEvaluationQuestionsByExperiment(accessToken, experiment.id),
+              ]);
+
+            const summary =
+              summaryResult.status === "fulfilled"
+                ? summaryResult.value
+                : createEmptySummary(experiment.id);
+            const ratings =
+              ratingsResult.status === "fulfilled"
+                ? ratingsResult.value
+                : createEmptyRatingsSummary(experiment.id);
+            const tokenUsage =
+              tokenUsageResult.status === "fulfilled"
+                ? tokenUsageResult.value
+                : createEmptyTokenUsageSummary(experiment.id);
+            const tests = testsResult.status === "fulfilled" ? testsResult.value : [];
+            const evaluationQuestions =
+              evaluationQuestionsResult.status === "fulfilled"
+                ? evaluationQuestionsResult.value
+                : [];
+            const appearanceModelRows = [
+              ...ratings.model_ratings.map((row) => ({
+                model_id: row.model_id,
+                model_name: row.model_name,
+              })),
+              ...tokenUsage.model_breakdown.map((row) => ({
+                model_id: row.model_id,
+                model_name: row.model_name,
+              })),
+            ].filter(
+              (row, index, arr) => arr.findIndex((item) => item.model_id === row.model_id) === index
+            );
+            const appearanceByModel =
+              appearanceModelRows.length > 0
+                ? await loadAppearanceSummaryMap(accessToken, experiment.id, appearanceModelRows)
+                : {};
 
             return [
               experiment.id,
               {
                 summary,
+                ratings,
+                appearanceByModel,
+                tokenUsage,
                 tests,
                 evaluationQuestions,
                 questionMap: {},
@@ -413,6 +883,9 @@ export const Results: React.FC = () => {
               experiment.id,
               {
                 summary: createEmptySummary(experiment.id),
+                ratings: createEmptyRatingsSummary(experiment.id),
+                appearanceByModel: {},
+                tokenUsage: createEmptyTokenUsageSummary(experiment.id),
                 tests: [],
                 evaluationQuestions: [],
                 questionMap: {},
@@ -447,18 +920,29 @@ export const Results: React.FC = () => {
   const loadExperimentDetail = async (experimentId: string) => {
     const existing = detailsByExperiment[experimentId];
     const experimentRow = experiments.find((item) => item.id === experimentId);
+    const isInProgressExperiment =
+      normalizeExperimentStatus(experimentRow?.status || "") === "IN_PROGRESS";
     const failedQuestionIdsFromMetadata =
       experimentRow
         ? extractRecentFailures(experimentRow)
             .map((item) => item.questionId)
             .filter(Boolean)
         : [];
+    const hasAnyMaterializedModelSignal =
+      !!existing &&
+      (
+        existing.tests.length > 0 ||
+        existing.summary.model_breakdown.length > 0 ||
+        (existing.ratings?.model_ratings.length || 0) > 0 ||
+        (existing.tokenUsage?.model_breakdown.length || 0) > 0
+      );
     const missingFailedQuestionIds =
       existing && failedQuestionIdsFromMetadata.length > 0
         ? failedQuestionIdsFromMetadata.filter((questionId) => !existing.questionMap[questionId])
         : [];
     const hasDeepDetail =
       !!existing &&
+      (!isInProgressExperiment || hasAnyMaterializedModelSignal) &&
       (existing.tests.length === 0 ||
         (Object.keys(existing.questionMap).length > 0 &&
           Object.keys(existing.preferencesByTest).length > 0)) &&
@@ -473,13 +957,53 @@ export const Results: React.FC = () => {
       const accessToken = getAccessToken();
       const baseDetail = existing;
       const tests =
-        baseDetail?.tests || (await getTestsByExperiment(accessToken, experimentId));
+        baseDetail?.tests ||
+        (await getTestsByExperiment(accessToken, experimentId).catch(() => []));
       const evaluationQuestions =
         baseDetail?.evaluationQuestions ||
-        (await getEvaluationQuestionsByExperiment(accessToken, experimentId));
+        (await getEvaluationQuestionsByExperiment(accessToken, experimentId).catch(() => []));
       const summary =
-        baseDetail?.summary ||
-        (await getExperimentModelPreferenceSummary(accessToken, experimentId));
+        !baseDetail?.summary || isEmptyPreferenceSummary(baseDetail.summary)
+          ? await getExperimentModelPreferenceSummary(accessToken, experimentId).catch(() =>
+              createEmptySummary(experimentId)
+            )
+        :
+        baseDetail.summary;
+      const ratings =
+        !baseDetail?.ratings || baseDetail.ratings.model_ratings.length === 0
+          ? await getExperimentModelRatings(accessToken, experimentId).catch(() =>
+              createEmptyRatingsSummary(experimentId)
+            )
+        :
+        baseDetail.ratings;
+      const tokenUsage =
+        !baseDetail?.tokenUsage ||
+        (
+          baseDetail.tokenUsage.model_breakdown.length === 0 &&
+          baseDetail.tests.length === 0 &&
+          baseDetail.summary.model_breakdown.length === 0 &&
+          (baseDetail.ratings?.model_ratings.length || 0) === 0
+        )
+          ? await getExperimentModelTokenUsage(accessToken, experimentId).catch(() =>
+              createEmptyTokenUsageSummary(experimentId)
+            )
+          : baseDetail.tokenUsage;
+      const appearanceModelRows = [
+        ...ratings.model_ratings.map((row) => ({
+          model_id: row.model_id,
+          model_name: row.model_name,
+        })),
+        ...tokenUsage.model_breakdown.map((row) => ({
+          model_id: row.model_id,
+          model_name: row.model_name,
+        })),
+      ].filter(
+        (row, index, arr) => arr.findIndex((item) => item.model_id === row.model_id) === index
+      );
+      const appearanceByModel =
+        appearanceModelRows.length > 0
+          ? await loadAppearanceSummaryMap(accessToken, experimentId, appearanceModelRows)
+          : {};
 
       const uniqueQuestionIds = [
         ...new Set([
@@ -487,20 +1011,14 @@ export const Results: React.FC = () => {
           ...failedQuestionIdsFromMetadata,
         ]),
       ];
-      const [questionEntries, responseEntries, preferenceEntries] = await Promise.all([
-        Promise.all(
+      const [questionEntriesSettled, preferenceEntriesSettled] = await Promise.all([
+        Promise.allSettled(
           uniqueQuestionIds.map(async (questionId) => [
             questionId,
             await getQuestionById(accessToken, questionId),
           ] as const)
         ),
-        Promise.all(
-          uniqueQuestionIds.map(async (questionId) => [
-            questionId,
-            await getResponsesByQuestion(accessToken, questionId),
-          ] as const)
-        ),
-        Promise.all(
+        Promise.allSettled(
           tests.map(async (test) => [
             test.id,
             await getPreferencesByTest(accessToken, test.id),
@@ -508,14 +1026,39 @@ export const Results: React.FC = () => {
         ),
       ]);
 
+      const questionEntries = questionEntriesSettled.flatMap((entry, index) => {
+        if (entry.status === "fulfilled") {
+          return [entry.value];
+        }
+
+        const questionId = uniqueQuestionIds[index];
+        return [[questionId, buildMissingQuestionFallback(questionId)] as const];
+      });
+
+      const preferenceEntries = preferenceEntriesSettled.flatMap((entry, index) => {
+        if (entry.status === "fulfilled") {
+          return [entry.value];
+        }
+
+        const test = tests[index];
+        if (!test) {
+          return [];
+        }
+
+        return [[test.id, [] as BackendPreference[]] as const];
+      });
+
       setDetailsByExperiment((prev) => ({
         ...prev,
         [experimentId]: {
           summary,
+          ratings,
+          appearanceByModel,
+          tokenUsage,
           tests,
           evaluationQuestions,
           questionMap: Object.fromEntries(questionEntries),
-          responsesByQuestion: Object.fromEntries(responseEntries),
+          responsesByQuestion: baseDetail?.responsesByQuestion || {},
           preferencesByTest: Object.fromEntries(preferenceEntries),
         },
       }));
@@ -528,6 +1071,49 @@ export const Results: React.FC = () => {
       setShowAlertToast(true);
     } finally {
       setLoadingDetailId((current) => (current === experimentId ? null : current));
+    }
+  };
+
+  const loadExperimentResponses = async (experimentId: string) => {
+    const existing = detailsByExperiment[experimentId];
+    if (existing && Object.keys(existing.responsesByQuestion).length > 0) {
+      return;
+    }
+
+    const accessToken = getAccessToken();
+    const tests = existing?.tests || (await getTestsByExperiment(accessToken, experimentId).catch(() => []));
+    const uniqueQuestionIds = [...new Set(tests.map((test) => test.question_id))];
+    setLoadingQuestionResponsesId(experimentId);
+    try {
+      const responseEntriesSettled = await Promise.all(
+        uniqueQuestionIds.map(async (questionId) => {
+          try {
+            return [
+              questionId,
+              await getResponsesByQuestion(accessToken, questionId).catch(() => []),
+            ] as const;
+          } catch {
+            return [questionId, [] as BackendResponseItem[]] as const;
+          }
+        })
+      );
+
+      setDetailsByExperiment((prev) => {
+        const current = prev[experimentId];
+        if (!current) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          [experimentId]: {
+            ...current,
+            responsesByQuestion: Object.fromEntries(responseEntriesSettled),
+          },
+        };
+      });
+    } finally {
+      setLoadingQuestionResponsesId((current) => (current === experimentId ? null : current));
     }
   };
 
@@ -559,15 +1145,20 @@ export const Results: React.FC = () => {
     }));
   };
 
-  const handleToggleFailureDetails = async (experimentId: string) => {
-    const willExpand = !(expandedFailureDetailsByExperiment[experimentId] ?? false);
-    if (willExpand) {
-      await loadExperimentDetail(experimentId);
-    }
-    setExpandedFailureDetailsByExperiment((prev) => ({
+  const handleSelectResultTab = (experimentId: string, tab: ResultTab) => {
+    setExpandedResultTabByExperiment((prev) => ({
       ...prev,
-      [experimentId]: willExpand,
+      [experimentId]: tab,
     }));
+
+    if (tab === "questions") {
+      void loadExperimentResponses(experimentId);
+    }
+  };
+
+  const handleOpenDiagnostics = (experimentId: string) => {
+    setExpandedExpId(experimentId);
+    handleSelectResultTab(experimentId, "diagnostics");
   };
 
   const handleRemoveModelFromExperiment = async (
@@ -604,6 +1195,32 @@ export const Results: React.FC = () => {
     }
   };
 
+  const handleRetryModel = async (
+    experimentId: string,
+    modelId: string,
+    modelName: string
+  ) => {
+    const accessToken = getAccessToken();
+    const actionKey = `${experimentId}:${modelId}`;
+    setRetryingModelKey(actionKey);
+    try {
+      await retryExperimentModelResponses(accessToken, experimentId, modelId);
+      await loadOverview();
+      if (expandedExpId === experimentId) {
+        await loadExperimentDetail(experimentId);
+      }
+      setSuccessMessage(`Retry queued for "${modelName}".`);
+      setShowSuccessToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Retry could not be started for this model."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setRetryingModelKey(null);
+    }
+  };
+
   const handleDeletePreference = async (experimentId: string, preferenceId: string) => {
     if (!window.confirm("Delete this recorded preference?")) {
       return;
@@ -630,12 +1247,13 @@ export const Results: React.FC = () => {
   };
 
   const filteredExperiments = useMemo(() => {
-    const loweredSearch = searchTerm.trim().toLowerCase();
-    const items = experiments.filter((experiment) => {
+      const loweredSearch = searchTerm.trim().toLowerCase();
+      const items = experiments.filter((experiment) => {
       const detail = detailsByExperiment[experiment.id];
       const matchesStatus =
-        statusFilter === "ALL" || experiment.status === statusFilter;
-      const modelNames = getExperimentModelNames(detail);
+        statusFilter === "ALL" ||
+        normalizeExperimentStatus(experiment.status) === statusFilter;
+      const modelNames = getExperimentModelNames(experiment, detail);
       const matchesSearch =
         loweredSearch.length === 0 ||
         experiment.name.toLowerCase().includes(loweredSearch) ||
@@ -649,17 +1267,14 @@ export const Results: React.FC = () => {
       const rightDetail = detailsByExperiment[right.id];
 
       if (sortBy === "most-preferences") {
-        return (
-          (rightDetail?.summary.total_preferences || 0) -
-          (leftDetail?.summary.total_preferences || 0)
-        );
+        return getDetailPreferenceCount(rightDetail) - getDetailPreferenceCount(leftDetail);
       }
 
       return (
         new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
       );
     });
-  }, [detailsByExperiment, experiments, searchTerm, sortBy, statusFilter]);
+  }, [appExperimentMap, detailsByExperiment, experiments, searchTerm, sortBy, statusFilter]);
 
   return (
     <div className="space-y-8">
@@ -726,8 +1341,7 @@ export const Results: React.FC = () => {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL">All Statuses</SelectItem>
-                <SelectItem value="DRAFT">Draft</SelectItem>
-                <SelectItem value="ACTIVE">Active</SelectItem>
+                <SelectItem value="IN_PROGRESS">In progress</SelectItem>
                 <SelectItem value="COMPLETED">Completed</SelectItem>
               </SelectContent>
             </Select>
@@ -772,31 +1386,64 @@ export const Results: React.FC = () => {
               const isLoadingDetail = loadingDetailId === experiment.id;
               const questionPoolName =
                 inputPoolMap[experiment.input_pool_id]?.name || "Unknown Question Pool";
-              const modelNames = getExperimentModelNames(detail);
-              const topRows =
-                detail?.summary.model_breakdown.filter((row) =>
-                  detail.summary.top_preferred_model_ids.includes(row.model_id)
-                ) || [];
-              const topBadgeLabel =
-                topRows.length > 0
-                  ? `${topRows.map((row) => row.model_name).join(", ")} (${formatPercentage(
-                      topRows[0].share_of_total * 100
-                    )} overall)`
-                  : "No preferences yet";
               const hasDeepDetail =
                 !!detail &&
                 (detail.tests.length === 0 ||
                   (Object.keys(detail.questionMap).length > 0 &&
                     Object.keys(detail.preferencesByTest).length > 0));
-              const analysis = hasDeepDetail && detail ? buildExperimentAnalysis(detail) : null;
+              const analysis =
+                hasDeepDetail && detail ? buildExperimentAnalysis(experiment, detail) : null;
+              const displayModelRows = getDisplayModelRows(experiment, detail);
+              const ratingRows =
+                detail?.ratings?.model_ratings.filter((row) =>
+                  displayModelRows.some((item) => item.modelId === row.model_id)
+                ) || [];
+              const topRatingRow = ratingRows[0];
+              const displayedTotalPreferences = getDetailPreferenceCount(detail);
+              const displayedTotalTests = getDetailTestCount(detail);
+              const eloRankedModels: ModelBreakdown[] =
+                analysis?.modelBreakdown ||
+                displayModelRows.map((row) => ({
+                  modelId: row.modelId,
+                  modelName: row.modelName,
+                  eloRating: row.eloRating,
+                  totalWins: 0,
+                  totalMatchups: 0,
+                  ratingGamesPlayed:
+                    detail?.ratings?.model_ratings.find((entry) => entry.model_id === row.modelId)
+                      ?.games_played || 0,
+                  ratingWins:
+                    detail?.ratings?.model_ratings.find((entry) => entry.model_id === row.modelId)
+                      ?.wins || 0,
+                  ratingLosses:
+                    detail?.ratings?.model_ratings.find((entry) => entry.model_id === row.modelId)
+                      ?.losses || 0,
+                  ratingDraws:
+                    detail?.ratings?.model_ratings.find((entry) => entry.model_id === row.modelId)
+                      ?.draws || 0,
+                  qualityPenalty:
+                    detail?.ratings?.model_ratings.find((entry) => entry.model_id === row.modelId)
+                      ?.quality_penalty || 0,
+                  backendAppearanceCount:
+                    detail?.appearanceByModel[row.modelId]?.appearance_count || 0,
+                  backendSelectionRate:
+                    detail?.appearanceByModel[row.modelId]?.selection_rate || 0,
+                  criteriaBreakdown: [],
+                }));
+              const topBadgeLabel =
+                topRatingRow
+                  ? `${topRatingRow.model_name} (Elo ${formatEloRating(topRatingRow.rating)})`
+                  : "No Elo ratings yet";
               const isQuestionExplorerExpanded =
                 expandedQuestionExplorerByExperiment[experiment.id] ?? false;
-              const isFailureDetailsExpanded =
-                expandedFailureDetailsByExperiment[experiment.id] ?? false;
+              const activeResultTab =
+                expandedResultTabByExperiment[experiment.id] ?? "overview";
               const expandedQuestionId = expandedQuestionByExperiment[experiment.id] || null;
+              const isQuestionResponsesLoading = loadingQuestionResponsesId === experiment.id;
               const testNumberById = detail
                 ? Object.fromEntries(detail.tests.map((test, index) => [test.id, index + 1]))
                 : {};
+              const failedModels = extractFailedModels(experiment);
               const failedResponseDetails: FailedResponseDetail[] = extractRecentFailures(
                 experiment
               ).map((item, index) => {
@@ -834,37 +1481,75 @@ export const Results: React.FC = () => {
                           </h3>
                           <span
                             className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                              experiment.status === "COMPLETED"
+                              normalizeExperimentStatus(experiment.status) === "COMPLETED"
                                 ? "bg-primary/20 text-primary"
                                 : "bg-accent/20 text-accent-foreground"
                             }`}
                           >
-                            {experiment.status}
+                            {formatExperimentStatus(experiment.status)}
                           </span>
                           <Badge variant="secondary">Top Model: {topBadgeLabel}</Badge>
                         </div>
                         <p className="text-sm text-muted-foreground">
                           Question Pool: <strong>{questionPoolName}</strong>
                         </p>
-                        <p className="text-sm text-muted-foreground">
-                          Created: {new Date(experiment.created_at).toLocaleString()}
-                        </p>
                         {experiment.evaluation_criteria && (
                           <p className="mt-1 text-sm text-muted-foreground">
                             Criteria: {experiment.evaluation_criteria}
                           </p>
                         )}
-                        {modelNames.length > 0 && (
+                        {displayModelRows.length > 0 && (
                           <div className="mt-4 flex flex-wrap gap-2">
-                            {(detail?.summary.model_breakdown || []).map((row) => {
-                              const actionKey = `${experiment.id}:${row.model_id}`;
+                            {displayModelRows.map((row) => {
+                              const actionKey = `${experiment.id}:${row.modelId}`;
                               const isRemoving = removingModelKey === actionKey;
+                              const isRetrying = retryingModelKey === actionKey;
+                              const failedState = failedModels.find(
+                                (item) => item.modelId === row.modelId
+                              );
                               return (
                                 <div
-                                  key={`${experiment.id}-${row.model_id}`}
+                                  key={`${experiment.id}-${row.modelId}`}
                                   className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1"
                                 >
-                                  <Badge variant="outline">{row.model_name}</Badge>
+                                  <Badge variant="outline">
+                                    {row.modelName}
+                                    {row.eloRating !== null
+                                      ? ` · Elo ${formatEloRating(row.eloRating)}`
+                                      : ""}
+                                  </Badge>
+                                  {failedState && (
+                                    <>
+                                      <Badge variant="secondary">
+                                        Failed ({failedState.totalFailCount})
+                                      </Badge>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-6 px-2 text-xs"
+                                      disabled={isRetrying || failedState.retryStatus === "in_progress"}
+                                      title={
+                                        failedState.retryStatus === "in_progress"
+                                          ? "Retry is already running for this model."
+                                          : `Retry ${failedState.totalFailCount} failed response${
+                                              failedState.totalFailCount !== 1 ? "s" : ""
+                                            }`
+                                      }
+                                      onClick={() =>
+                                        void handleRetryModel(
+                                          experiment.id,
+                                          row.modelId,
+                                          row.modelName
+                                        )
+                                      }
+                                    >
+                                      {isRetrying || failedState.retryStatus === "in_progress"
+                                        ? "Retrying..."
+                                        : "Retry"}
+                                    </Button>
+                                    </>
+                                  )}
                                   <Button
                                     type="button"
                                     size="sm"
@@ -874,8 +1559,8 @@ export const Results: React.FC = () => {
                                     onClick={() =>
                                       void handleRemoveModelFromExperiment(
                                         experiment.id,
-                                        row.model_id,
-                                        row.model_name
+                                        row.modelId,
+                                        row.modelName
                                       )
                                     }
                                   >
@@ -891,14 +1576,6 @@ export const Results: React.FC = () => {
                       <div className="w-full space-y-4 xl:w-[340px]">
                         <div className="grid gap-3">
                           <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
-                            <p className="text-xs text-muted-foreground">
-                              Total Evaluation Question
-                            </p>
-                            <p className="text-lg font-semibold text-foreground">
-                              {detail?.summary.total_tests || 0}
-                            </p>
-                          </div>
-                          <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
                             <p className="text-xs text-muted-foreground">Run Summary</p>
                             <p className="text-sm font-medium text-foreground">
                               {runSummary.successCount} success · {runSummary.failCount} fail
@@ -908,21 +1585,38 @@ export const Results: React.FC = () => {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => void handleToggleFailureDetails(experiment.id)}
+                                  onClick={() => handleOpenDiagnostics(experiment.id)}
                                   className="w-full"
                                 >
-                                  {isFailureDetailsExpanded ? "Hide details" : "More details"}
+                                  Open diagnostics
                                 </Button>
                               </div>
                             )}
                           </div>
                           <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
-                            <p className="text-xs text-muted-foreground">Estimated Cost</p>
+                            <p className="text-xs text-muted-foreground">Token Usage</p>
                             <p className="text-sm font-medium text-foreground">
-                              {runSummary.totalCostUsd === null
-                                ? "Not available"
-                                : `$${runSummary.totalCostUsd.toFixed(6)}`}
+                              {detail?.tokenUsage
+                                ? `${formatInteger(detail.tokenUsage.total_tokens)} total tokens · ${formatUsd(
+                                    detail.tokenUsage.total_cost_usd
+                                  )}`
+                                : "Loading token usage..."}
                             </p>
+                            {detail?.tokenUsage && detail.tokenUsage.model_breakdown.length > 0 && (
+                              <div className="mt-2 space-y-1">
+                                {detail.tokenUsage.model_breakdown.map((row) => (
+                                  <div
+                                    key={`${experiment.id}-tokens-${row.model_id}`}
+                                    className="flex items-center justify-between gap-3 text-xs text-muted-foreground"
+                                  >
+                                    <span className="truncate">{row.model_name}</span>
+                                    <span className="shrink-0 font-medium text-foreground">
+                                      {formatInteger(row.total_tokens)} · {formatUsd(row.total_cost_usd)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
 
@@ -951,714 +1645,791 @@ export const Results: React.FC = () => {
                         </Button>
                       </div>
                     </div>
-                    {isFailureDetailsExpanded && runSummary.failCount > 0 && (
-                      <section className="mt-5 rounded-xl border border-border bg-background p-4">
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <h4 className="font-semibold text-foreground">Failed Responses</h4>
-                          <Badge variant="secondary">{failedResponseDetails.length}</Badge>
-                        </div>
-                        {failedResponseDetails.length === 0 ? (
-                          <p className="mt-2 text-sm text-muted-foreground">
-                            Could not map failures to a specific model/question from current result data.
-                          </p>
-                        ) : (
-                          <div className="mt-3 space-y-3">
-                            {failedResponseDetails.map((item, index) => (
-                              <div
-                                key={`${item.testId}-${item.modelId}-${index}`}
-                                className="rounded-lg border border-border bg-muted/20 p-4"
-                              >
-                                <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]">
-                                  <div>
-                                    <p className="text-sm font-semibold text-foreground">
-                                      {item.modelName}
-                                    </p>
-                                    {item.reason && (
-                                      <p className="mt-2 text-xs text-muted-foreground">
-                                        Reason: {item.reason}
-                                      </p>
-                                    )}
-                                  </div>
-                                  <div className="space-y-2">
-                                    <p className="text-sm text-foreground">{item.questionText}</p>
-                                    {item.error && (
-                                      <p className="text-sm text-destructive">
-                                        Error: {item.error}
-                                      </p>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </section>
-                    )}
                   </div>
 
                   {expandedExpId === experiment.id && (
                     <div className="border-t border-border bg-muted/20 px-5 py-5 text-card-foreground">
-                      {!detail || !analysis ? (
+                      {!detail ? (
                         <div className="py-8 text-center text-muted-foreground">
                           <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin" />
                           Loading experiment details...
                         </div>
                       ) : (
                         <div className="space-y-5">
-                          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-                            <section className="rounded-xl border border-border bg-background p-4">
-                              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                  <h4 className="font-semibold text-foreground">
-                                    Performance Snapshot
-                                  </h4>
-                                  <p className="text-sm text-muted-foreground">
-                                    Compact ranking of the compared models for this experiment.
-                                  </p>
-                                </div>
-                                <Badge variant="secondary">
-                                  {analysis.modelBreakdown.length} model
-                                  {analysis.modelBreakdown.length !== 1 ? "s" : ""}
-                                </Badge>
-                              </div>
+                          <div className="rounded-2xl border border-border bg-background/80 p-2 shadow-sm">
+                            <div className="flex flex-wrap gap-2">
+                            {(
+                              [
+                                ["overview", "Overview"],
+                                ["pairwise", "Pairwise"],
+                                ["questions", "Questions"],
+                                ["diagnostics", "Diagnostics"],
+                              ] as const
+                            ).map(([tabId, label]) => (
+                              <Button
+                                key={tabId}
+                                type="button"
+                                size="sm"
+                                variant={activeResultTab === tabId ? "secondary" : "ghost"}
+                                onClick={() => handleSelectResultTab(experiment.id, tabId)}
+                                className="rounded-full px-4"
+                              >
+                                {label}
+                              </Button>
+                            ))}
+                            </div>
+                          </div>
 
-                              {analysis.modelBreakdown.length === 0 ? (
-                                <p className="text-sm text-muted-foreground">
-                                  No preferences have been recorded for this experiment yet.
-                                </p>
-                              ) : (
-                                <div className="space-y-3">
-                                  {analysis.modelBreakdown.map((entry, index) => {
-                                    const summaryRow = detail.summary.model_breakdown.find(
-                                      (row) => row.model_id === entry.modelId
-                                    );
-                                    const overallPreferenceShare = summaryRow
-                                      ? summaryRow.share_of_total * 100
-                                      : getPercentage(
-                                          entry.totalWins,
-                                          detail.summary.total_preferences
-                                        );
-
-                                    return (
-                                      <div
-                                        key={entry.modelId}
-                                        className="rounded-lg border border-border bg-muted/20 px-4 py-3"
-                                      >
-                                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                                          <div className="space-y-1">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                              <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
-                                                #{index + 1}
-                                              </span>
-                                              <p className="font-medium text-foreground">
-                                                {entry.modelName}
-                                              </p>
-                                              <Badge variant="outline">
-                                                {summaryRow?.preference_count ?? entry.totalWins} vote
-                                                {(summaryRow?.preference_count ?? entry.totalWins) !==
-                                                1
-                                                  ? "s"
-                                                  : ""}
-                                              </Badge>
-                                              <Badge variant="secondary">
-                                                Overall {formatPercentage(overallPreferenceShare)}
-                                              </Badge>
-                                            </div>
-                                            <p className="text-sm text-muted-foreground">
-                                              {entry.totalWins} total preference
-                                              {entry.totalWins !== 1 ? "s" : ""} across this
-                                              experiment
-                                            </p>
-                                          </div>
-
-                                          {entry.criteriaBreakdown.length > 0 && (
-                                            <div className="space-y-2 lg:min-w-[320px]">
-                                              {entry.criteriaBreakdown.map((question) => (
-                                                <div
-                                                  key={`${entry.modelId}-${question.evaluationQuestionId}`}
-                                                  className="flex items-center justify-between gap-4 rounded-lg border border-border/70 bg-background px-3 py-2 text-sm"
-                                                >
-                                                  <span className="text-muted-foreground">
-                                                    {question.evaluationQuestionText}
-                                                  </span>
-                                                  <span className="font-medium text-foreground">
-                                                    {formatPercentage(question.percentage)}
-                                                  </span>
-                                                </div>
-                                              ))}
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </section>
-
-                            <div className="space-y-4">
+                          {activeResultTab === "overview" && (
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
                               <section className="rounded-xl border border-border bg-background p-4">
                                 <div className="mb-4 flex items-start justify-between gap-3">
                                   <div>
                                     <h4 className="font-semibold text-foreground">
-                                      Evaluation Criteria
+                                      Experiment Overview
                                     </h4>
                                     <p className="text-sm text-muted-foreground">
-                                      See which model leads each judging criterion.
+                                      A compact snapshot of the current experiment state.
+                                    </p>
+                                  </div>
+                                  <Badge variant="secondary">
+                                    {displayedTotalPreferences} evaluation
+                                    {displayedTotalPreferences !== 1 ? "s" : ""}
+                                  </Badge>
+                                </div>
+
+                                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                  <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 shadow-sm">
+                                    <p className="text-xs text-muted-foreground">Question Pool</p>
+                                    <p className="mt-1 font-medium text-foreground">
+                                      {questionPoolName}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 shadow-sm">
+                                    <p className="text-xs text-muted-foreground">Created</p>
+                                    <p className="mt-1 font-medium text-foreground">
+                                      {new Date(experiment.created_at).toLocaleString()}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 shadow-sm">
+                                    <p className="text-xs text-muted-foreground">Models</p>
+                                    <p className="mt-1 font-medium text-foreground">
+                                      {eloRankedModels.length}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-xl border border-border bg-muted/20 px-4 py-3 shadow-sm">
+                                    <p className="text-xs text-muted-foreground">Total Blind Tests</p>
+                                    <p className="mt-1 font-medium text-foreground">
+                                      {displayedTotalTests}
                                     </p>
                                   </div>
                                 </div>
 
-                                {analysis.evaluationQuestionSummaries.length === 0 ? (
+                                {experiment.evaluation_criteria && (
+                                  <div className="mt-4 rounded-xl border border-border bg-muted/20 px-4 py-3 shadow-sm">
+                                    <p className="text-xs text-muted-foreground">
+                                      Evaluation Criteria
+                                    </p>
+                                    <p className="mt-1 text-sm text-foreground">
+                                      {experiment.evaluation_criteria}
+                                    </p>
+                                  </div>
+                                )}
+                              </section>
+
+                              <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                <div className="mb-4 flex items-start justify-between gap-3">
+                                  <div>
+                                    <h4 className="font-semibold text-foreground">
+                                      Model Lineup
+                                    </h4>
+                                    <p className="text-sm text-muted-foreground">
+                                      Models participating in this experiment.
+                                    </p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                      Elo ranks the models within this experiment. Selection Rate is the percentage of times a model is chosen as the best-performing answer among the questions it receives.
+                                    </p>
+                                  </div>
+                                  <Badge variant="outline">{eloRankedModels.length}</Badge>
+                                </div>
+
+                                <div className="space-y-3">
+                                  {eloRankedModels.map((entry, index) => (
+                                    <div
+                                      key={entry.modelId}
+                                      className="rounded-xl border border-border bg-muted/20 px-4 py-3 shadow-sm"
+                                    >
+                                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                        <div className="flex items-center gap-2">
+                                          <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
+                                            #{index + 1}
+                                          </span>
+                                          <p className="font-medium text-foreground">
+                                            {entry.modelName}
+                                          </p>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <Badge variant="secondary">
+                                            Elo {formatEloRating(entry.eloRating)}
+                                          </Badge>
+                                          <Badge variant="outline">
+                                            Selection {formatRatioAsPercentage(
+                                              entry.backendSelectionRate
+                                            )}
+                                          </Badge>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </section>
+                            </div>
+                          )}
+
+                                {activeResultTab === "pairwise" && (
+                            !analysis ? (
+                              <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                <div className="py-10 text-center text-muted-foreground">
+                                  <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin" />
+                                  Loading pairwise details...
+                                </div>
+                              </section>
+                            ) : (
+                              <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                <div className="mb-4">
+                                  <h4 className="font-semibold text-foreground">
+                                    Head-To-Head Matrix
+                                  </h4>
                                   <p className="text-sm text-muted-foreground">
-                                    No evaluation-question-level preferences yet.
+                                    Each cell shows `row model wins / column model wins`.
+                                  </p>
+                                </div>
+
+                                {analysis.matrixModelIds.length < 2 ? (
+                                  <p className="text-sm text-muted-foreground">
+                                    At least two compared models are required to build a matrix.
                                   </p>
                                 ) : (
-                                  <div className="space-y-3">
-                                    {analysis.evaluationQuestionSummaries.map((summary) => {
-                                      const leader = Object.entries(summary.modelCounts).sort(
-                                        (left, right) => right[1] - left[1]
-                                      )[0];
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow className="bg-muted/30 hover:bg-muted/30">
+                                        <TableHead>Model</TableHead>
+                                        {analysis.matrixModelIds.map((modelId) => (
+                                          <TableHead key={`head-${modelId}`}>
+                                            {getModelName(modelId, detail)}
+                                          </TableHead>
+                                        ))}
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {analysis.matrixModelIds.map((rowModelId) => (
+                                        <TableRow key={`row-${rowModelId}`}>
+                                          <TableCell className="font-medium">
+                                            {getModelName(rowModelId, detail)}
+                                          </TableCell>
+                                          {analysis.matrixModelIds.map((colModelId) => {
+                                            if (rowModelId === colModelId) {
+                                              return (
+                                                <TableCell
+                                                  key={`${rowModelId}-${colModelId}`}
+                                                  className="text-muted-foreground"
+                                                >
+                                                  -
+                                                </TableCell>
+                                              );
+                                            }
+
+                                            const pair = analysis.headToHeadEntries.find(
+                                              (entry) =>
+                                                getPairKey(entry.modelAId, entry.modelBId) ===
+                                                getPairKey(rowModelId, colModelId)
+                                            );
+
+                                            let rowWins = 0;
+                                            let colWins = 0;
+                                            if (pair) {
+                                              rowWins =
+                                                pair.modelAId === rowModelId
+                                                  ? pair.modelAWins
+                                                  : pair.modelBWins;
+                                              colWins =
+                                                pair.modelAId === rowModelId
+                                                  ? pair.modelBWins
+                                                  : pair.modelAWins;
+                                            }
+
+                                            return (
+                                              <TableCell key={`${rowModelId}-${colModelId}`}>
+                                                <div className="text-sm font-medium text-foreground">
+                                                  {rowWins} / {colWins}
+                                                </div>
+                                              </TableCell>
+                                            );
+                                          })}
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                )}
+                              </section>
+                            )
+                          )}
+
+                          {activeResultTab === "questions" && (
+                            !analysis ? (
+                              <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                <div className="py-10 text-center text-muted-foreground">
+                                  <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin" />
+                                  Loading question details...
+                                </div>
+                              </section>
+                            ) : isQuestionResponsesLoading &&
+                              Object.keys(detail.responsesByQuestion).length === 0 ? (
+                              <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                <div className="py-10 text-center text-muted-foreground">
+                                  <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin" />
+                                  Loading question responses...
+                                </div>
+                              </section>
+                            ) : Object.keys(detail.responsesByQuestion).length === 0 ? (
+                              <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                <p className="text-sm text-muted-foreground">
+                                  No response records were loaded for this experiment.
+                                </p>
+                              </section>
+                            ) : (
+                            <section className="overflow-hidden rounded-2xl border border-border bg-background shadow-sm">
+                              <button
+                                type="button"
+                                onClick={() => handleToggleQuestionExplorer(experiment.id)}
+                                className="flex w-full flex-col gap-2 border-b border-border px-4 py-4 text-left transition-colors hover:bg-muted/20 sm:flex-row sm:items-center sm:justify-between"
+                              >
+                                <div>
+                                  <h4 className="font-semibold text-foreground">
+                                    Question Explorer
+                                  </h4>
+                                  <p className="text-sm text-muted-foreground">
+                                    Click a question to inspect only that question&apos;s blind tests and recorded preferences.
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="secondary">
+                                    {analysis.questionGroups.length} question
+                                    {analysis.questionGroups.length !== 1 ? "s" : ""}
+                                  </Badge>
+                                  <span className="flex items-center gap-1 text-sm font-medium text-primary">
+                                    {isQuestionExplorerExpanded ? (
+                                      <>
+                                        Hide
+                                        <ChevronUp className="h-4 w-4" />
+                                      </>
+                                    ) : (
+                                      <>
+                                        Show
+                                        <ChevronDown className="h-4 w-4" />
+                                      </>
+                                    )}
+                                  </span>
+                                </div>
+                              </button>
+
+                              {isQuestionExplorerExpanded &&
+                                (analysis.questionGroups.length === 0 ? (
+                                  <div className="px-4 py-6">
+                                    <p className="text-sm text-muted-foreground">
+                                      No question-level comparisons available yet.
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <div className="divide-y divide-border">
+                                    {analysis.questionGroups.map((group, index) => {
+                                      const leadingEntries = Object.entries(group.modelCounts).sort(
+                                        (a, b) => b[1] - a[1]
+                                      );
+                                      const leader = leadingEntries[0];
+                                      const winnerPreferenceCount = leadingEntries.reduce(
+                                        (sum, [, count]) => sum + count,
+                                        0
+                                      );
                                       const leaderPercentage = leader
-                                        ? getPercentage(leader[1], summary.totalPreferences)
+                                        ? getPercentage(leader[1], winnerPreferenceCount)
                                         : 0;
+                                      const isQuestionExpanded =
+                                        expandedQuestionId === group.questionId;
+                                      const testsForQuestion = group.testIds
+                                        .map((testId) =>
+                                          detail.tests.find((test) => test.id === testId)
+                                        )
+                                        .filter((test): test is BackendTest => Boolean(test));
+                                      const questionPreferences = testsForQuestion.flatMap(
+                                        (test) => detail.preferencesByTest[test.id] || []
+                                      );
 
                                       return (
-                                        <div
-                                          key={summary.evaluationQuestionId}
-                                          className="rounded-lg border border-border bg-muted/20 px-4 py-3"
-                                        >
-                                          <div className="flex items-start justify-between gap-3">
-                                            <div>
-                                              <p className="font-medium text-foreground">
-                                                {summary.evaluationQuestionText}
-                                              </p>
-                                              <p className="mt-1 text-sm text-muted-foreground">
-                                                {leader
-                                                  ? `${getModelName(leader[0], detail)} leads with ${leader[1]} vote${
-                                                      leader[1] !== 1 ? "s" : ""
-                                                    } • ${formatPercentage(leaderPercentage)}`
-                                                  : "No saved preference for this criterion yet."}
+                                          <div key={group.questionId}>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleToggleQuestion(experiment.id, group.questionId)
+                                            }
+                                            className="flex w-full flex-col gap-3 px-4 py-4 text-left transition-colors hover:bg-muted/30 md:flex-row md:items-start md:justify-between"
+                                          >
+                                            <div className="min-w-0 flex-1">
+                                              <div className="mb-2 flex flex-wrap items-center gap-2">
+                                                <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
+                                                  Question {index + 1}
+                                                </span>
+                                                {leader && (
+                                                  <Badge variant="secondary">
+                                                    {getModelName(leader[0], detail)} leads
+                                                  </Badge>
+                                                )}
+                                              </div>
+                                              <p className="text-sm text-foreground">
+                                                {isQuestionExpanded
+                                                  ? group.questionText
+                                                  : truncateText(group.questionText, 220)}
                                               </p>
                                             </div>
-                                            <Badge variant="outline">
-                                              {summary.totalPreferences} vote
-                                              {summary.totalPreferences !== 1 ? "s" : ""}
-                                            </Badge>
-                                          </div>
+
+                                            <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                                              <Badge variant="outline">
+                                                {group.testIds.length} blind test
+                                                {group.testIds.length !== 1 ? "s" : ""}
+                                              </Badge>
+                                              <Badge variant="outline">
+                                                {group.preferenceCount} vote
+                                                {group.preferenceCount !== 1 ? "s" : ""}
+                                              </Badge>
+                                              <Badge variant="secondary">
+                                                {leader
+                                                  ? `${getModelName(leader[0], detail)} (${formatPercentage(
+                                                      leaderPercentage
+                                                    )})`
+                                                  : "No leader yet"}
+                                              </Badge>
+                                              <span className="flex items-center gap-1 text-sm font-medium text-primary">
+                                                {isQuestionExpanded ? (
+                                                  <>
+                                                    Hide
+                                                    <ChevronUp className="h-4 w-4" />
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    Inspect
+                                                    <ChevronDown className="h-4 w-4" />
+                                                  </>
+                                                )}
+                                              </span>
+                                            </div>
+                                          </button>
+
+                                          {isQuestionExpanded && (
+                                            <div className="border-t border-border bg-muted/10 px-4 py-4">
+                                              <div className="grid gap-4 xl:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
+                                                <div className="space-y-4">
+                                                  <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
+                                                    <div className="flex items-center justify-between gap-3">
+                                                      <p className="text-sm font-semibold text-foreground">
+                                                        Vote distribution
+                                                      </p>
+                                                      <Badge variant="outline">
+                                                        {group.preferenceCount} vote
+                                                        {group.preferenceCount !== 1 ? "s" : ""}
+                                                      </Badge>
+                                                    </div>
+
+                                                    {leadingEntries.length === 0 ? (
+                                                      <p className="mt-3 text-sm text-muted-foreground">
+                                                        No winner selections recorded for this question yet.
+                                                      </p>
+                                                    ) : (
+                                                      <div className="mt-3 flex flex-wrap gap-2">
+                                                        {leadingEntries.map(([modelId, count]) => (
+                                                          <Badge
+                                                            key={`${group.questionId}-${modelId}`}
+                                                            variant="secondary"
+                                                          >
+                                                            {getModelName(modelId, detail)}: {count} (
+                                                            {formatPercentage(
+                                                              getPercentage(
+                                                                count,
+                                                                winnerPreferenceCount
+                                                              )
+                                                            )}
+                                                            )
+                                                          </Badge>
+                                                        ))}
+                                                      </div>
+                                                    )}
+
+                                                    {(group.bothGoodCount > 0 ||
+                                                      group.bothPoorCount > 0) && (
+                                                      <div className="mt-3 flex flex-wrap gap-2">
+                                                        {group.bothGoodCount > 0 && (
+                                                          <Badge variant="outline">
+                                                            Both Good: {group.bothGoodCount}
+                                                          </Badge>
+                                                        )}
+                                                        {group.bothPoorCount > 0 && (
+                                                          <Badge variant="outline">
+                                                            Both Poor: {group.bothPoorCount}
+                                                          </Badge>
+                                                        )}
+                                                      </div>
+                                                    )}
+                                                  </div>
+
+                                                  {detail.evaluationQuestions.length > 0 && (
+                                                    <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
+                                                      <p className="text-sm font-semibold text-foreground">
+                                                        Criteria outcomes for this question
+                                                      </p>
+                                                      <div className="mt-3 space-y-2">
+                                                        {detail.evaluationQuestions.map(
+                                                          (questionItem) => {
+                                                            const matchingPreferences =
+                                                              questionPreferences.filter(
+                                                                (preference) =>
+                                                                  preference.evaluation_question_id ===
+                                                                  questionItem.id
+                                                              );
+                                                            const criterionLeader = Object.entries(
+                                                              matchingPreferences.reduce<
+                                                                Record<string, number>
+                                                              >((acc, preference) => {
+                                                                if (!preference.preferred_model_id) {
+                                                                  return acc;
+                                                                }
+                                                                acc[preference.preferred_model_id] =
+                                                                  (acc[preference.preferred_model_id] || 0) + 1;
+                                                                return acc;
+                                                              }, {})
+                                                            ).sort((left, right) => right[1] - left[1])[0];
+                                                            const criterionLeaderPercentage =
+                                                              criterionLeader
+                                                                ? getPercentage(
+                                                                    criterionLeader[1],
+                                                                    Object.values(
+                                                                      matchingPreferences.reduce<
+                                                                        Record<string, number>
+                                                                      >((acc, preference) => {
+                                                                        if (!preference.preferred_model_id) {
+                                                                          return acc;
+                                                                        }
+                                                                        acc[preference.preferred_model_id] =
+                                                                          (acc[
+                                                                            preference.preferred_model_id
+                                                                          ] || 0) + 1;
+                                                                        return acc;
+                                                                      }, {})
+                                                                    ).reduce((sum, count) => sum + count, 0)
+                                                                  )
+                                                                : 0;
+                                                            const criterionBothGoodCount =
+                                                              matchingPreferences.filter(
+                                                                (preference) =>
+                                                                  preference.is_both_good ||
+                                                                  preference.result_type === "both_good"
+                                                              ).length;
+                                                            const criterionBothPoorCount =
+                                                              matchingPreferences.filter(
+                                                                (preference) =>
+                                                                  preference.is_both_poor ||
+                                                                  preference.result_type === "both_poor"
+                                                              ).length;
+
+                                                            return (
+                                                              <div
+                                                                key={questionItem.id}
+                                                                className="flex items-start justify-between gap-4 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 text-sm"
+                                                              >
+                                                                <span className="text-muted-foreground">
+                                                                  {questionItem.evaluation_question}
+                                                                </span>
+                                                                <span className="text-right font-medium text-foreground">
+                                                                  {criterionLeader
+                                                                    ? `${getModelName(
+                                                                        criterionLeader[0],
+                                                                        detail
+                                                                      )} (${criterionLeader[1]} • ${formatPercentage(
+                                                                        criterionLeaderPercentage
+                                                                      )})`
+                                                                    : criterionBothGoodCount > 0
+                                                                      ? `Both Good (${criterionBothGoodCount})`
+                                                                      : criterionBothPoorCount > 0
+                                                                        ? `Both Poor (${criterionBothPoorCount})`
+                                                                    : "No preference saved"}
+                                                                </span>
+                                                              </div>
+                                                            );
+                                                          }
+                                                        )}
+                                                      </div>
+                                                    </div>
+                                                  )}
+                                                </div>
+
+                                                <div className="space-y-3">
+                                                  {testsForQuestion.length === 0 ? (
+                                                    <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
+                                                      <p className="text-sm text-muted-foreground">
+                                                        No blind tests are grouped under this question yet.
+                                                      </p>
+                                                    </div>
+                                                  ) : (
+                                                    testsForQuestion.map((test) => {
+                                                      const responsesForQuestion =
+                                                        detail.responsesByQuestion[test.question_id] ||
+                                                        [];
+                                                      const modelAResponse =
+                                                        responsesForQuestion.find(
+                                                          (response) =>
+                                                            response.experiment_id === experiment.id &&
+                                                            response.model_id === test.model_a_id
+                                                        );
+                                                      const modelBResponse =
+                                                        responsesForQuestion.find(
+                                                          (response) =>
+                                                            response.experiment_id === experiment.id &&
+                                                            response.model_id === test.model_b_id
+                                                        );
+                                                      const preferences =
+                                                        detail.preferencesByTest[test.id] || [];
+                                                      const modelAVotes = preferences.filter(
+                                                        (preference) =>
+                                                          preference.preferred_model_id === test.model_a_id
+                                                      ).length;
+                                                      const modelBVotes = preferences.filter(
+                                                        (preference) =>
+                                                          preference.preferred_model_id === test.model_b_id
+                                                      ).length;
+                                                      const bothGoodVotes = preferences.filter(
+                                                        (preference) =>
+                                                          preference.is_both_good ||
+                                                          preference.result_type === "both_good"
+                                                      ).length;
+                                                      const bothPoorVotes = preferences.filter(
+                                                        (preference) =>
+                                                          preference.is_both_poor ||
+                                                          preference.result_type === "both_poor"
+                                                      ).length;
+                                                      const modelAName = getModelName(
+                                                        test.model_a_id,
+                                                        detail
+                                                      );
+                                                      const modelBName = getModelName(
+                                                        test.model_b_id,
+                                                        detail
+                                                      );
+
+                                                      return (
+                                                        <div
+                                                          key={test.id}
+                                                          className="rounded-2xl border border-border bg-background p-5 shadow-sm"
+                                                        >
+                                                          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                                            <div>
+                                                              <h5 className="font-semibold text-foreground">
+                                                                Blind Test {testNumberById[test.id] || 0}
+                                                              </h5>
+                                                              <p className="text-sm text-muted-foreground">
+                                                                {new Date(test.created_at).toLocaleString()}
+                                                              </p>
+                                                            </div>
+
+                                                            <div className="flex flex-wrap gap-2">
+                                                              <Badge variant="outline">{modelAName}</Badge>
+                                                              <Badge variant="outline">{modelBName}</Badge>
+                                                              <Badge variant="secondary">
+                                                                {modelAVotes} - {modelBVotes}
+                                                              </Badge>
+                                                              {bothGoodVotes > 0 && (
+                                                                <Badge variant="outline">
+                                                                  Both Good: {bothGoodVotes}
+                                                                </Badge>
+                                                              )}
+                                                              {bothPoorVotes > 0 && (
+                                                                <Badge variant="outline">
+                                                                  Both Poor: {bothPoorVotes}
+                                                                </Badge>
+                                                              )}
+                                                            </div>
+                                                          </div>
+
+                                                          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                                                            <div className="rounded-xl border border-border bg-muted/20 p-4 shadow-sm">
+                                                              <div className="mb-2 flex items-center justify-between gap-3">
+                                                                <p className="text-sm font-semibold text-foreground">
+                                                                  {modelAName}
+                                                                </p>
+                                                                <span className="text-xs text-muted-foreground">
+                                                                  {modelAVotes} vote
+                                                                  {modelAVotes !== 1 ? "s" : ""}
+                                                                </span>
+                                                              </div>
+                                                              <div className="max-h-52 overflow-y-auto pr-1">
+                                                                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                                                                  {modelAResponse?.model_response || "Response not found."}
+                                                                </p>
+                                                              </div>
+                                                            </div>
+
+                                                            <div className="rounded-xl border border-border bg-muted/20 p-4 shadow-sm">
+                                                              <div className="mb-2 flex items-center justify-between gap-3">
+                                                                <p className="text-sm font-semibold text-foreground">
+                                                                  {modelBName}
+                                                                </p>
+                                                                <span className="text-xs text-muted-foreground">
+                                                                  {modelBVotes} vote
+                                                                  {modelBVotes !== 1 ? "s" : ""}
+                                                                </span>
+                                                              </div>
+                                                              <div className="max-h-52 overflow-y-auto pr-1">
+                                                                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+                                                                  {modelBResponse?.model_response || "Response not found."}
+                                                                </p>
+                                                              </div>
+                                                            </div>
+                                                          </div>
+
+                                                          {detail.evaluationQuestions.length > 0 && (
+                                                            <div className="mt-4 rounded-xl border border-border bg-muted/10 p-4 shadow-sm">
+                                                              <p className="mb-3 text-sm font-semibold text-foreground">
+                                                                Recorded Preferences
+                                                              </p>
+                                                              <div className="grid gap-2 md:grid-cols-2">
+                                                                {detail.evaluationQuestions.map(
+                                                                  (questionItem) => {
+                                                                    const matchingPreference = preferences.find(
+                                                                      (preference) =>
+                                                                        preference.evaluation_question_id ===
+                                                                        questionItem.id
+                                                                    );
+                                                                    const preferredModelName =
+                                                                      getPreferenceOutcomeLabel(
+                                                                        matchingPreference,
+                                                                        detail,
+                                                                        test
+                                                                      );
+
+                                                                    return (
+                                                                      <div
+                                                                        key={questionItem.id}
+                                                                        className="rounded-xl border border-border/70 bg-background px-3 py-3 text-sm shadow-sm"
+                                                                      >
+                                                                        <div className="flex items-start justify-between gap-2">
+                                                                          <p className="text-muted-foreground">
+                                                                            {questionItem.evaluation_question}
+                                                                          </p>
+                                                                          {matchingPreference && (
+                                                                            <Button
+                                                                              type="button"
+                                                                              size="sm"
+                                                                              variant="outline"
+                                                                              className="h-6 px-2 text-xs"
+                                                                              disabled={
+                                                                                deletingPreferenceId ===
+                                                                                matchingPreference.id
+                                                                              }
+                                                                              onClick={() =>
+                                                                                void handleDeletePreference(
+                                                                                  experiment.id,
+                                                                                  matchingPreference.id
+                                                                                )
+                                                                              }
+                                                                            >
+                                                                              {deletingPreferenceId ===
+                                                                              matchingPreference.id
+                                                                                ? "Deleting..."
+                                                                                : "Delete"}
+                                                                            </Button>
+                                                                          )}
+                                                                        </div>
+                                                                        <p className="mt-1 font-medium text-foreground">
+                                                                          {preferredModelName}
+                                                                        </p>
+                                                                      </div>
+                                                                    );
+                                                                  }
+                                                                )}
+                                                              </div>
+                                                            </div>
+                                                          )}
+                                                        </div>
+                                                      );
+                                                    })
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
                                         </div>
                                       );
                                     })}
                                   </div>
-                                )}
-                              </section>
-                            </div>
-                          </div>
+                                ))}
+                            </section>
+                            )
+                          )}
 
-                          <section className="rounded-xl border border-border bg-background p-4">
-                            <div className="mb-4">
-                              <h4 className="font-semibold text-foreground">
-                                Head-To-Head Matrix
-                              </h4>
-                              <p className="text-sm text-muted-foreground">
-                                Each cell shows `row model wins / column model wins`.
-                              </p>
-                            </div>
-
-                            {analysis.matrixModelIds.length < 2 ? (
-                              <p className="text-sm text-muted-foreground">
-                                At least two compared models are required to build a matrix.
-                              </p>
-                            ) : (
-                              <Table>
-                                <TableHeader>
-                                  <TableRow className="bg-muted/30 hover:bg-muted/30">
-                                    <TableHead>Model</TableHead>
-                                    {analysis.matrixModelIds.map((modelId) => (
-                                      <TableHead key={`head-${modelId}`}>
-                                        {getModelName(modelId, detail)}
-                                      </TableHead>
-                                    ))}
-                                  </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                  {analysis.matrixModelIds.map((rowModelId) => (
-                                    <TableRow key={`row-${rowModelId}`}>
-                                      <TableCell className="font-medium">
-                                        {getModelName(rowModelId, detail)}
-                                      </TableCell>
-                                      {analysis.matrixModelIds.map((colModelId) => {
-                                        if (rowModelId === colModelId) {
-                                          return (
-                                            <TableCell
-                                              key={`${rowModelId}-${colModelId}`}
-                                              className="text-muted-foreground"
-                                            >
-                                              -
-                                            </TableCell>
-                                          );
-                                        }
-
-                                        const pair = analysis.headToHeadEntries.find(
-                                          (entry) =>
-                                            getPairKey(entry.modelAId, entry.modelBId) ===
-                                            getPairKey(rowModelId, colModelId)
-                                        );
-
-                                        let rowWins = 0;
-                                        let colWins = 0;
-                                        if (pair) {
-                                          rowWins =
-                                            pair.modelAId === rowModelId
-                                              ? pair.modelAWins
-                                              : pair.modelBWins;
-                                          colWins =
-                                            pair.modelAId === rowModelId
-                                              ? pair.modelBWins
-                                              : pair.modelAWins;
-                                        }
-
-                                        return (
-                                          <TableCell key={`${rowModelId}-${colModelId}`}>
-                                            <div className="text-sm font-medium text-foreground">
-                                              {rowWins} / {colWins}
-                                            </div>
-                                          </TableCell>
-                                        );
-                                      })}
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            )}
-                          </section>
-
-                          <section className="overflow-hidden rounded-xl border border-border bg-background">
-                            <button
-                              type="button"
-                              onClick={() => handleToggleQuestionExplorer(experiment.id)}
-                              className="flex w-full flex-col gap-2 border-b border-border px-4 py-4 text-left transition-colors hover:bg-muted/20 sm:flex-row sm:items-center sm:justify-between"
-                            >
-                              <div>
-                                <h4 className="font-semibold text-foreground">
-                                  Question Explorer
-                                </h4>
-                                <p className="text-sm text-muted-foreground">
-                                  Click a prompt to inspect only that question&apos;s blind tests and
-                                  recorded preferences.
-                                </p>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Badge variant="secondary">
-                                  {analysis.questionGroups.length} question
-                                  {analysis.questionGroups.length !== 1 ? "s" : ""}
-                                </Badge>
-                                <span className="flex items-center gap-1 text-sm font-medium text-primary">
-                                  {isQuestionExplorerExpanded ? (
-                                    <>
-                                      Hide
-                                      <ChevronUp className="h-4 w-4" />
-                                    </>
-                                  ) : (
-                                    <>
-                                      Show
-                                      <ChevronDown className="h-4 w-4" />
-                                    </>
-                                  )}
-                                </span>
-                              </div>
-                            </button>
-
-                            {isQuestionExplorerExpanded &&
-                              (analysis.questionGroups.length === 0 ? (
-                                <div className="px-4 py-6">
+                          {activeResultTab === "diagnostics" && (
+                            <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                              <div className="mb-3 flex items-center justify-between gap-3">
+                                <div>
+                                  <h4 className="font-semibold text-foreground">Failed Responses</h4>
                                   <p className="text-sm text-muted-foreground">
-                                    No question-level comparisons available yet.
+                                    Recent model failures captured by the backend run metadata.
                                   </p>
                                 </div>
+                                <Badge variant="secondary">{failedResponseDetails.length}</Badge>
+                              </div>
+                              {failedResponseDetails.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">
+                                  No failures were recorded for this experiment.
+                                </p>
                               ) : (
-                                <div className="divide-y divide-border">
-                                {analysis.questionGroups.map((group, index) => {
-                                  const leadingEntries = Object.entries(group.modelCounts).sort(
-                                    (a, b) => b[1] - a[1]
-                                  );
-                                  const leader = leadingEntries[0];
-                                  const leaderPercentage = leader
-                                    ? getPercentage(leader[1], group.preferenceCount)
-                                    : 0;
-                                  const isQuestionExpanded =
-                                    expandedQuestionId === group.questionId;
-                                  const testsForQuestion = group.testIds
-                                    .map((testId) =>
-                                      detail.tests.find((test) => test.id === testId)
-                                    )
-                                    .filter((test): test is BackendTest => Boolean(test));
-                                  const questionPreferences = testsForQuestion.flatMap(
-                                    (test) => detail.preferencesByTest[test.id] || []
-                                  );
-
-                                  return (
-                                    <div key={group.questionId}>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          handleToggleQuestion(experiment.id, group.questionId)
-                                        }
-                                        className="flex w-full flex-col gap-3 px-4 py-4 text-left transition-colors hover:bg-muted/30 md:flex-row md:items-start md:justify-between"
-                                      >
-                                        <div className="min-w-0 flex-1">
-                                          <div className="mb-2 flex flex-wrap items-center gap-2">
-                                            <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
-                                              Question {index + 1}
-                                            </span>
-                                            {leader && (
-                                              <Badge variant="secondary">
-                                                {getModelName(leader[0], detail)} leads
-                                              </Badge>
-                                            )}
+                                <div className="grid gap-4 xl:grid-cols-2">
+                                  {failedResponseDetails.map((item, index) => (
+                                    <div
+                                      key={`${item.testId}-${item.modelId}-${index}`}
+                                      className="rounded-xl border border-border bg-muted/20 p-4 shadow-sm"
+                                    >
+                                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)]">
+                                        <div>
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <p className="text-sm font-semibold text-foreground">
+                                              {item.modelName}
+                                            </p>
+                                            <Badge variant="outline">Failure #{index + 1}</Badge>
                                           </div>
-                                          <p className="text-sm text-foreground">
-                                            {isQuestionExpanded
-                                              ? group.questionText
-                                              : truncateText(group.questionText, 220)}
-                                          </p>
+                                          {item.reason && (
+                                            <p className="mt-2 text-xs text-muted-foreground">
+                                              Reason: {item.reason}
+                                            </p>
+                                          )}
                                         </div>
-
-                                        <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                                          <Badge variant="outline">
-                                            {group.testIds.length} blind test
-                                            {group.testIds.length !== 1 ? "s" : ""}
-                                          </Badge>
-                                          <Badge variant="outline">
-                                            {group.preferenceCount} vote
-                                            {group.preferenceCount !== 1 ? "s" : ""}
-                                          </Badge>
-                                          <Badge variant="secondary">
-                                            {leader
-                                              ? `${getModelName(leader[0], detail)} (${formatPercentage(
-                                                  leaderPercentage
-                                                )})`
-                                              : "No leader yet"}
-                                          </Badge>
-                                          <span className="flex items-center gap-1 text-sm font-medium text-primary">
-                                            {isQuestionExpanded ? (
-                                              <>
-                                                Hide
-                                                <ChevronUp className="h-4 w-4" />
-                                              </>
-                                            ) : (
-                                              <>
-                                                Inspect
-                                                <ChevronDown className="h-4 w-4" />
-                                              </>
-                                            )}
-                                          </span>
-                                        </div>
-                                      </button>
-
-                                      {isQuestionExpanded && (
-                                        <div className="border-t border-border bg-muted/10 px-4 py-4">
-                                          <div className="grid gap-4 xl:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
-                                            <div className="space-y-4">
-                                              <div className="rounded-lg border border-border bg-background p-4">
-                                                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                                                  Prompt
-                                                </p>
-                                                <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">
-                                                  {group.questionText}
-                                                </p>
-                                              </div>
-
-                                              <div className="rounded-lg border border-border bg-background p-4">
-                                                <div className="flex items-center justify-between gap-3">
-                                                  <p className="text-sm font-semibold text-foreground">
-                                                    Vote distribution
-                                                  </p>
-                                                  <Badge variant="outline">
-                                                    {group.preferenceCount} vote
-                                                    {group.preferenceCount !== 1 ? "s" : ""}
-                                                  </Badge>
-                                                </div>
-
-                                                {leadingEntries.length === 0 ? (
-                                                  <p className="mt-3 text-sm text-muted-foreground">
-                                                    No votes recorded for this question yet.
-                                                  </p>
-                                                ) : (
-                                                  <div className="mt-3 flex flex-wrap gap-2">
-                                                    {leadingEntries.map(([modelId, count]) => (
-                                                      <Badge
-                                                        key={`${group.questionId}-${modelId}`}
-                                                        variant="secondary"
-                                                      >
-                                                        {getModelName(modelId, detail)}: {count} (
-                                                        {formatPercentage(
-                                                          getPercentage(
-                                                            count,
-                                                            group.preferenceCount
-                                                          )
-                                                        )}
-                                                        )
-                                                      </Badge>
-                                                    ))}
-                                                  </div>
-                                                )}
-                                              </div>
-
-                                              {detail.evaluationQuestions.length > 0 && (
-                                                <div className="rounded-lg border border-border bg-background p-4">
-                                                  <p className="text-sm font-semibold text-foreground">
-                                                    Criteria outcomes for this question
-                                                  </p>
-                                                  <div className="mt-3 space-y-2">
-                                                    {detail.evaluationQuestions.map(
-                                                      (questionItem) => {
-                                                        const matchingPreferences =
-                                                          questionPreferences.filter(
-                                                            (preference) =>
-                                                              preference.evaluation_question_id ===
-                                                              questionItem.id
-                                                          );
-                                                        const criterionLeader = Object.entries(
-                                                          matchingPreferences.reduce<
-                                                            Record<string, number>
-                                                          >((acc, preference) => {
-                                                            acc[preference.preferred_model_id] =
-                                                              (acc[
-                                                                preference.preferred_model_id
-                                                              ] || 0) + 1;
-                                                            return acc;
-                                                          }, {})
-                                                        ).sort((left, right) => right[1] - left[1])[0];
-                                                        const criterionLeaderPercentage =
-                                                          criterionLeader
-                                                            ? getPercentage(
-                                                                criterionLeader[1],
-                                                                matchingPreferences.length
-                                                              )
-                                                            : 0;
-
-                                                        return (
-                                                          <div
-                                                            key={questionItem.id}
-                                                            className="flex items-start justify-between gap-4 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 text-sm"
-                                                          >
-                                                            <span className="text-muted-foreground">
-                                                              {questionItem.evaluation_question}
-                                                            </span>
-                                                            <span className="text-right font-medium text-foreground">
-                                                              {criterionLeader
-                                                                ? `${getModelName(
-                                                                    criterionLeader[0],
-                                                                    detail
-                                                                  )} (${criterionLeader[1]} • ${formatPercentage(
-                                                                    criterionLeaderPercentage
-                                                                  )})`
-                                                                : "No preference saved"}
-                                                            </span>
-                                                          </div>
-                                                        );
-                                                      }
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              )}
-                                            </div>
-
-                                            <div className="space-y-3">
-                                              {testsForQuestion.length === 0 ? (
-                                                <div className="rounded-lg border border-border bg-background p-4">
-                                                  <p className="text-sm text-muted-foreground">
-                                                    No blind tests are grouped under this question
-                                                    yet.
-                                                  </p>
-                                                </div>
-                                              ) : (
-                                                testsForQuestion.map((test) => {
-                                                  const responsesForQuestion =
-                                                    detail.responsesByQuestion[test.question_id] ||
-                                                    [];
-                                                  const modelAResponse =
-                                                    responsesForQuestion.find(
-                                                      (response) =>
-                                                        response.experiment_id === experiment.id &&
-                                                        response.model_id === test.model_a_id
-                                                    );
-                                                  const modelBResponse =
-                                                    responsesForQuestion.find(
-                                                      (response) =>
-                                                        response.experiment_id === experiment.id &&
-                                                        response.model_id === test.model_b_id
-                                                    );
-                                                  const preferences =
-                                                    detail.preferencesByTest[test.id] || [];
-                                                  const modelAVotes = preferences.filter(
-                                                    (preference) =>
-                                                      preference.preferred_model_id === test.model_a_id
-                                                  ).length;
-                                                  const modelBVotes = preferences.filter(
-                                                    (preference) =>
-                                                      preference.preferred_model_id === test.model_b_id
-                                                  ).length;
-                                                  const modelAName = getModelName(
-                                                    test.model_a_id,
-                                                    detail
-                                                  );
-                                                  const modelBName = getModelName(
-                                                    test.model_b_id,
-                                                    detail
-                                                  );
-
-                                                  return (
-                                                    <div
-                                                      key={test.id}
-                                                      className="rounded-xl border border-border bg-background p-4"
-                                                    >
-                                                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                                        <div>
-                                                          <h5 className="font-semibold text-foreground">
-                                                            Blind Test{" "}
-                                                            {testNumberById[test.id] || 0}
-                                                          </h5>
-                                                          <p className="text-sm text-muted-foreground">
-                                                            {new Date(
-                                                              test.created_at
-                                                            ).toLocaleString()}
-                                                          </p>
-                                                        </div>
-
-                                                        <div className="flex flex-wrap gap-2">
-                                                          <Badge variant="outline">
-                                                            {modelAName}
-                                                          </Badge>
-                                                          <Badge variant="outline">
-                                                            {modelBName}
-                                                          </Badge>
-                                                          <Badge variant="secondary">
-                                                            {modelAVotes} - {modelBVotes}
-                                                          </Badge>
-                                                        </div>
-                                                      </div>
-
-                                                      <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                                                        <div className="rounded-lg border border-border bg-muted/20 p-4">
-                                                          <div className="mb-2 flex items-center justify-between gap-3">
-                                                            <p className="text-sm font-semibold text-foreground">
-                                                              {modelAName}
-                                                            </p>
-                                                            <span className="text-xs text-muted-foreground">
-                                                              {modelAVotes} vote
-                                                              {modelAVotes !== 1 ? "s" : ""}
-                                                            </span>
-                                                          </div>
-                                                          <div className="max-h-52 overflow-y-auto pr-1">
-                                                            <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                                                              {modelAResponse?.model_response ||
-                                                                "Response not found."}
-                                                            </p>
-                                                          </div>
-                                                        </div>
-
-                                                        <div className="rounded-lg border border-border bg-muted/20 p-4">
-                                                          <div className="mb-2 flex items-center justify-between gap-3">
-                                                            <p className="text-sm font-semibold text-foreground">
-                                                              {modelBName}
-                                                            </p>
-                                                            <span className="text-xs text-muted-foreground">
-                                                              {modelBVotes} vote
-                                                              {modelBVotes !== 1 ? "s" : ""}
-                                                            </span>
-                                                          </div>
-                                                          <div className="max-h-52 overflow-y-auto pr-1">
-                                                            <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                                                              {modelBResponse?.model_response ||
-                                                                "Response not found."}
-                                                            </p>
-                                                          </div>
-                                                        </div>
-                                                      </div>
-
-                                                      {detail.evaluationQuestions.length > 0 && (
-                                                        <div className="mt-4 rounded-lg border border-border bg-muted/10 p-4">
-                                                          <p className="mb-3 text-sm font-semibold text-foreground">
-                                                            Recorded Preferences
-                                                          </p>
-                                                          <div className="grid gap-2 md:grid-cols-2">
-                                                            {detail.evaluationQuestions.map(
-                                                              (questionItem) => {
-                                                                const matchingPreference =
-                                                                  preferences.find(
-                                                                    (preference) =>
-                                                                      preference.evaluation_question_id ===
-                                                                      questionItem.id
-                                                                  );
-                                                                const preferredModelName =
-                                                                  matchingPreference
-                                                                    ? getModelName(
-                                                                        matchingPreference.preferred_model_id,
-                                                                        detail
-                                                                      )
-                                                                    : "No preference saved";
-
-                                                                return (
-                                                                  <div
-                                                                    key={questionItem.id}
-                                                                    className="rounded-lg border border-border/70 bg-background px-3 py-3 text-sm"
-                                                                  >
-                                                                    <div className="flex items-start justify-between gap-2">
-                                                                      <p className="text-muted-foreground">
-                                                                        {
-                                                                          questionItem.evaluation_question
-                                                                        }
-                                                                      </p>
-                                                                      {matchingPreference && (
-                                                                        <Button
-                                                                          type="button"
-                                                                          size="sm"
-                                                                          variant="outline"
-                                                                          className="h-6 px-2 text-xs"
-                                                                          disabled={
-                                                                            deletingPreferenceId ===
-                                                                            matchingPreference.id
-                                                                          }
-                                                                          onClick={() =>
-                                                                            void handleDeletePreference(
-                                                                              experiment.id,
-                                                                              matchingPreference.id
-                                                                            )
-                                                                          }
-                                                                        >
-                                                                          {deletingPreferenceId ===
-                                                                          matchingPreference.id
-                                                                            ? "Deleting..."
-                                                                            : "Delete"}
-                                                                        </Button>
-                                                                      )}
-                                                                    </div>
-                                                                    <p className="mt-1 font-medium text-foreground">
-                                                                      {preferredModelName}
-                                                                    </p>
-                                                                  </div>
-                                                                );
-                                                              }
-                                                            )}
-                                                          </div>
-                                                        </div>
-                                                      )}
-                                                    </div>
-                                                  );
-                                                })
-                                              )}
-                                            </div>
+                                        <div className="space-y-2">
+                                          <div className="rounded-lg border border-border/70 bg-background px-3 py-2">
+                                            <p className="text-sm text-foreground">
+                                              {item.questionText}
+                                            </p>
                                           </div>
+                                          {item.error && (
+                                            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2">
+                                              <p className="text-sm text-destructive">
+                                                Error: {item.error}
+                                              </p>
+                                            </div>
+                                          )}
                                         </div>
-                                      )}
+                                      </div>
                                     </div>
-                                  );
-                                })}
+                                  ))}
                                 </div>
-                              ))}
-                          </section>
+                              )}
+                            </section>
+                          )}
                         </div>
                       )}
                     </div>

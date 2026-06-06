@@ -7,8 +7,8 @@ import { useAuth } from "../../context/AuthContext";
 import {
   createPreference,
   drawBlindTest,
-  getActiveExperiments,
-  getActiveJudgeExperiments,
+  getCompletedExperiments,
+  getCompletedJudgeExperiments,
   getEvaluationQuestionsByExperiment,
   type BackendDrawBlindTestResponse,
   type BackendEvaluationQuestion,
@@ -246,8 +246,8 @@ export const Judge: React.FC = () => {
       const accessToken = getAccessToken();
       const rows =
         user?.isHead
-          ? await getActiveExperiments(accessToken)
-          : await getActiveJudgeExperiments(accessToken);
+          ? await getCompletedExperiments(accessToken)
+          : await getCompletedJudgeExperiments(accessToken);
       setBackendExperiments(rows);
     } catch (error) {
       setAlertMessage(
@@ -336,23 +336,43 @@ export const Judge: React.FC = () => {
     setIsSavingPreference(true);
     try {
       const accessToken = getAccessToken();
-      const modelPreferenceQuestions = evaluationQuestions.filter((question) => {
-        const selection = selections[question.id];
-        return selection === "A" || selection === "B";
-      });
+      const answeredPreferenceQuestions = evaluationQuestions
+        .map((question) => ({
+          question,
+          selection: selections[question.id],
+        }))
+        .filter(({ selection }) => selection !== "dont-know");
 
-      await Promise.all(
-        modelPreferenceQuestions.map((question) =>
-          createPreference(accessToken, {
-            evaluation_question_id: question.id,
-            test_id: currentTestId,
-            preferred_model_id:
-              selections[question.id] === "A"
-                ? currentBlindTest!.test.model_a_id
-                : currentBlindTest!.test.model_b_id,
-          })
-        )
-      );
+      for (const { question, selection } of answeredPreferenceQuestions) {
+        await createPreference(
+            accessToken,
+            selection === "A"
+              ? {
+                  evaluation_question_id: question.id,
+                  test_id: currentTestId,
+                  preferred_model_id: currentBlindTest!.test.model_a_id,
+                }
+              : selection === "B"
+                ? {
+                    evaluation_question_id: question.id,
+                    test_id: currentTestId,
+                    preferred_model_id: currentBlindTest!.test.model_b_id,
+                  }
+                : selection === "tie"
+                  ? {
+                      evaluation_question_id: question.id,
+                      test_id: currentTestId,
+                      preferred_model_id: null,
+                      is_both_good: true,
+                    }
+                  : {
+                      evaluation_question_id: question.id,
+                      test_id: currentTestId,
+                      preferred_model_id: null,
+                      is_both_poor: true,
+                  }
+          );
+      }
 
       setEvaluations((prev) => ({
         ...prev,
@@ -428,7 +448,7 @@ export const Judge: React.FC = () => {
         <div className="bg-muted/30 border border-border rounded-lg p-4">
           <p className="text-sm text-muted-foreground">
             <span className="font-semibold">💡 Your Role:</span> You'll compare
-            random blind responses from active experiments in your organization.
+            random blind responses from completed experiments in your organization.
           </p>
         </div>
 
@@ -439,7 +459,7 @@ export const Judge: React.FC = () => {
             </div>
           ) : backendExperiments.length === 0 ? (
             <div className="py-8 text-center text-muted-foreground">
-              No active experiments available for this account.
+              No completed experiments available for this account.
             </div>
           ) : (
             <div className="space-y-3">
@@ -479,9 +499,6 @@ export const Judge: React.FC = () => {
                           </p>
                         )}
                       </div>
-                      <span className="px-3 py-1 text-xs font-semibold rounded-full bg-primary/10 text-primary">
-                        {experiment.status}
-                      </span>
                     </div>
                   </button>
                 );

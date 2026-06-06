@@ -138,7 +138,11 @@ export interface BackendPreference {
   id: string;
   evaluation_question_id: string;
   test_id: string;
-  preferred_model_id: string;
+  preferred_model_id: string | null;
+  result_type?: string | null;
+  is_both_good?: boolean;
+  is_both_poor?: boolean;
+  metadata_json?: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -157,6 +161,122 @@ export interface BackendExperimentModelPreferenceSummary {
   model_breakdown: BackendModelPreferenceStatRow[];
   top_preferred_model_ids: string[];
   top_preference_count: number;
+}
+
+export interface BackendExperimentModelRatingRow {
+  id: string;
+  experiment_id: string;
+  model_id: string;
+  model_name: string;
+  rating: number;
+  games_played: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  both_good_count: number;
+  both_poor_count: number;
+  quality_penalty: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BackendExperimentModelRatingsSummary {
+  experiment_id: string;
+  initial_rating: number;
+  k_factor: number;
+  both_poor_penalty: number;
+  model_ratings: BackendExperimentModelRatingRow[];
+}
+
+export interface BackendExperimentModelAppearanceSummary {
+  experiment_id: string;
+  model_id: string;
+  model_name: string;
+  appearance_count: number;
+  selected_count: number;
+  not_selected_count: number;
+  both_good_count: number;
+  both_poor_count: number;
+  selection_rate: number;
+}
+
+export interface BackendModelTokenUsageRow {
+  model_id: string;
+  model_name: string;
+  response_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  reasoning_tokens: number | null;
+  cached_tokens: number | null;
+  total_cost_usd: number | null;
+}
+
+export interface BackendExperimentModelTokenUsageSummary {
+  experiment_id: string;
+  total_responses: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  reasoning_tokens: number | null;
+  cached_tokens: number | null;
+  total_cost_usd: number | null;
+  model_breakdown: BackendModelTokenUsageRow[];
+}
+
+export interface BackendJudgeOutcomeDistribution {
+  model_a: number;
+  model_b: number;
+  both_good: number;
+  both_poor: number;
+}
+
+export interface BackendJudgeBiasSummary {
+  judge_id: string;
+  experiment_id: string | null;
+  experiment_name: string | null;
+  total_evaluations: number;
+  left_pick_count: number;
+  right_pick_count: number;
+  both_good_count: number;
+  both_poor_count: number;
+  left_pick_rate: number;
+  right_pick_rate: number;
+  side_bias_score: number;
+  long_pick_count: number;
+  short_pick_count: number;
+  equal_length_count: number;
+  length_eligible_count: number;
+  long_pick_rate: number;
+  short_pick_rate: number;
+  length_bias_score: number;
+  avg_completion_tokens_chosen: number | null;
+  avg_completion_tokens_rejected: number | null;
+  outcome_distribution: BackendJudgeOutcomeDistribution;
+}
+
+export interface BackendJudgeAnalyticsListItem {
+  judge_id: string;
+  judge_name: string;
+  judge_email: string;
+  summary: BackendJudgeBiasSummary;
+}
+
+export interface BackendJudgeAnalyticsListResponse {
+  organization_id: string;
+  judges: BackendJudgeAnalyticsListItem[];
+  from_date: string | null;
+  to_date: string | null;
+}
+
+export interface BackendJudgeAnalyticsDetailResponse {
+  judge_id: string;
+  judge_name: string;
+  judge_email: string;
+  global_summary: BackendJudgeBiasSummary;
+  experiment_summaries: BackendJudgeBiasSummary[];
+  from_date: string | null;
+  to_date: string | null;
 }
 
 interface ApiErrorPayload {
@@ -671,6 +791,33 @@ export const getActiveExperiments = (
     },
   });
 
+export const getCompletedJudgeExperiments = (
+  accessToken: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendExperiment[]>(
+    `/experiments/completed/judge?skip=${skip}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getCompletedExperiments = (
+  accessToken: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendExperiment[]>(`/experiments/completed?skip=${skip}&limit=${limit}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
 export const getExperiments = (accessToken: string, skip = 0, limit = 100) =>
   requestJson<BackendExperiment[]>(`/experiments?skip=${skip}&limit=${limit}`, {
     method: "GET",
@@ -726,7 +873,11 @@ export const createPreference = (
   payload: {
     evaluation_question_id: string;
     test_id: string;
-    preferred_model_id: string;
+    preferred_model_id?: string | null;
+    result_type?: string | null;
+    is_both_good?: boolean;
+    is_both_poor?: boolean;
+    metadata_json?: Record<string, unknown> | null;
   }
 ) =>
   requestJson<BackendPreference>("/preferences", {
@@ -823,6 +974,65 @@ export const getExperimentModelPreferenceSummary = (
     }
   );
 
+export const getExperimentModelRatings = (
+  accessToken: string,
+  experimentId: string
+) =>
+  requestJson<BackendExperimentModelRatingsSummary>(
+    `/analytics/experiments/${experimentId}/model-ratings`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getExperimentModelAppearanceSummary = (
+  accessToken: string,
+  experimentId: string,
+  modelId: string
+) =>
+  requestJson<BackendExperimentModelAppearanceSummary>(
+    `/analytics/experiments/${experimentId}/models/${modelId}/appearance-summary`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getExperimentModelTokenUsage = (
+  accessToken: string,
+  experimentId: string
+) =>
+  requestJson<BackendExperimentModelTokenUsageSummary>(
+    `/analytics/experiments/${experimentId}/model-token-usage`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
+export const getJudgeAnalyticsList = (accessToken: string) =>
+  requestJson<BackendJudgeAnalyticsListResponse>("/analytics/judges", {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const getJudgeAnalyticsDetail = (accessToken: string, judgeId: string) =>
+  requestJson<BackendJudgeAnalyticsDetailResponse>(`/analytics/judges/${judgeId}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
 export const deleteExperimentPreference = (
   accessToken: string,
   preferenceId: string
@@ -851,6 +1061,23 @@ export const removeModelFromExperiment = (
     deleted_preferences?: number;
   }>(`/experiments/${experimentId}/models/${modelId}`, {
     method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const retryExperimentModelResponses = (
+  accessToken: string,
+  experimentId: string,
+  modelId: string
+) =>
+  requestJson<{
+    message: string;
+    task_id: string;
+    experiment_id: string;
+    model_id: string;
+  }>(`/experiments/${experimentId}/models/${modelId}/retry`, {
+    method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },

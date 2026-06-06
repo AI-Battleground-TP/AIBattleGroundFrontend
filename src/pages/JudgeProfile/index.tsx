@@ -4,8 +4,8 @@ import { Badge } from "../../components/ui/badge";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import {
-  getActiveExperiments,
-  getActiveJudgeExperiments,
+  getCompletedExperiments,
+  getCompletedJudgeExperiments,
   getMe,
   getMyTests,
   getPreferences,
@@ -63,8 +63,8 @@ const JudgeProfilePage: React.FC = () => {
           canUseJudgeScopedEndpoints ? getMyTests(accessToken) : Promise.resolve([]),
           canUseJudgeScopedEndpoints ? getPreferences(accessToken) : Promise.resolve([]),
           canUseJudgeScopedEndpoints
-            ? getActiveJudgeExperiments(accessToken).catch(() => [])
-            : getActiveExperiments(accessToken).catch(() => []),
+            ? getCompletedJudgeExperiments(accessToken).catch(() => [])
+            : getCompletedExperiments(accessToken).catch(() => []),
         ]);
 
         if (!cancelled) {

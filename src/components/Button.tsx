@@ -11,6 +11,7 @@ interface ButtonProps {
   disabled?: boolean;
   className?: string;
   asChild?: boolean;
+  title?: string;
 }
 
 type ButtonVariant = "primary" | "secondary" | "outline" | "danger" | "ghost";
@@ -39,12 +40,14 @@ export const Button: React.FC<ButtonProps> = ({
   disabled = false,
   className = "",
   asChild = false,
+  title,
 }) => {
   return (
     <ShadcnButton
       type={type}
       onClick={onClick}
       disabled={disabled}
+      title={title}
       variant={variantMap[variant]}
       size={sizeMap[size]}
       className={cn(className)}

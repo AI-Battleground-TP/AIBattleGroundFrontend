@@ -329,7 +329,7 @@ const extractFailedModels = (experiment: BackendExperiment): FailedModelState[] 
 
   return failedModels
     .filter(isObjectRecord)
-    .map((item) => ({
+    .map((item): FailedModelState => ({
       modelId: typeof item.model_id === "string" ? item.model_id : "",
       failedQuestionIds: Array.isArray(item.failed_question_ids)
         ? item.failed_question_ids.filter((entry): entry is string => typeof entry === "string")
@@ -1523,31 +1523,33 @@ export const Results: React.FC = () => {
                                       <Badge variant="secondary">
                                         Failed ({failedState.totalFailCount})
                                       </Badge>
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      className="h-6 px-2 text-xs"
-                                      disabled={isRetrying || failedState.retryStatus === "in_progress"}
-                                      title={
-                                        failedState.retryStatus === "in_progress"
-                                          ? "Retry is already running for this model."
-                                          : `Retry ${failedState.totalFailCount} failed response${
-                                              failedState.totalFailCount !== 1 ? "s" : ""
-                                            }`
-                                      }
-                                      onClick={() =>
-                                        void handleRetryModel(
-                                          experiment.id,
-                                          row.modelId,
-                                          row.modelName
-                                        )
-                                      }
-                                    >
-                                      {isRetrying || failedState.retryStatus === "in_progress"
-                                        ? "Retrying..."
-                                        : "Retry"}
-                                    </Button>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-6 px-2 text-xs"
+                                        disabled={
+                                          isRetrying || failedState.retryStatus === "in_progress"
+                                        }
+                                        title={
+                                          failedState.retryStatus === "in_progress"
+                                            ? "Retry is already running for this model."
+                                            : `Retry ${failedState.totalFailCount} failed response${
+                                                failedState.totalFailCount !== 1 ? "s" : ""
+                                              }`
+                                        }
+                                        onClick={() =>
+                                          void handleRetryModel(
+                                            experiment.id,
+                                            row.modelId,
+                                            row.modelName
+                                          )
+                                        }
+                                      >
+                                        {isRetrying || failedState.retryStatus === "in_progress"
+                                          ? "Retrying..."
+                                          : "Retry"}
+                                      </Button>
                                     </>
                                   )}
                                   <Button

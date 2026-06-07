@@ -119,3 +119,315 @@ export const downloadQuestionsCSVTemplate = () => {
   document.body.removeChild(a);
   window.URL.revokeObjectURL(url);
 };
+
+export interface ParsedImportExperimentCSV {
+  name: string;
+  inputPoolName: string;
+  description?: string;
+  inputPoolDescription?: string;
+  evaluationCriteria?: string;
+  evaluationQuestions: { evaluation_question: string }[];
+  questions: { text: string; category?: string; type: "open" }[];
+  models: { name: string }[];
+  responses: { model_name: string; question_index: number; text: string }[];
+}
+
+const parseCsvRow = (line: string) => {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      i += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push(current.trim());
+  return cells.map((cell) => cell.replace(/^"(.*)"$/, "$1").trim());
+};
+
+export const parseExperimentImportCSV = (file: File): Promise<ParsedImportExperimentCSV> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      try {
+        const text = String(e.target?.result || "");
+        const lines = text
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+
+        if (lines.length === 0) {
+          throw new Error("CSV file is empty.");
+        }
+
+        const header = parseCsvRow(lines[0]).map((value) => value.toLowerCase());
+        const requiredColumns = [
+          "row_type",
+          "name",
+          "input_pool_name",
+          "description",
+          "input_pool_description",
+          "evaluation_criteria",
+          "evaluation_question",
+          "question_text",
+          "question_category",
+          "question_type",
+          "model_name",
+          "question_index",
+          "response_text",
+        ];
+
+        const hasExpectedHeader = requiredColumns.some((column) => header.includes(column));
+        const startIndex = hasExpectedHeader ? 1 : 0;
+
+        const result: ParsedImportExperimentCSV = {
+          name: "",
+          inputPoolName: "",
+          evaluationQuestions: [],
+          questions: [],
+          models: [],
+          responses: [],
+        };
+
+        for (let i = startIndex; i < lines.length; i += 1) {
+          const cells = parseCsvRow(lines[i]);
+          if (cells.length === 0) {
+            continue;
+          }
+
+          const rowType = (cells[0] || "").toLowerCase();
+          const get = (index: number) => cells[index]?.trim() || "";
+
+          if (rowType === "meta" || rowType === "experiment") {
+            result.name = result.name || get(1);
+            result.inputPoolName = result.inputPoolName || get(2);
+            result.description = result.description || get(3) || undefined;
+            result.inputPoolDescription = result.inputPoolDescription || get(4) || undefined;
+            result.evaluationCriteria = result.evaluationCriteria || get(5) || undefined;
+            continue;
+          }
+
+          if (rowType === "evaluation_question") {
+            const evaluationQuestion = get(6) || get(1);
+            if (evaluationQuestion) {
+              result.evaluationQuestions.push({ evaluation_question: evaluationQuestion });
+            }
+            continue;
+          }
+
+          if (rowType === "question") {
+            const text = get(7) || get(1);
+            if (text) {
+              result.questions.push({
+                text,
+                category: get(8) || undefined,
+                type: "open",
+              });
+            }
+            continue;
+          }
+
+          if (rowType === "model") {
+            const name = get(10) || get(1);
+            if (name) {
+              result.models.push({ name });
+            }
+            continue;
+          }
+
+          if (rowType === "response") {
+            const modelName = get(10) || get(1);
+            const questionIndexRaw = get(11) || get(2);
+            const text = get(12) || get(3);
+            const questionIndex = Number(questionIndexRaw);
+            if (modelName && Number.isInteger(questionIndex) && text) {
+              result.responses.push({
+                model_name: modelName,
+                question_index: questionIndex,
+                text,
+              });
+            }
+            continue;
+          }
+
+          // Backward-friendly fallbacks if the CSV is written without row_type.
+          if (!result.name && get(0) && get(1)) {
+            result.name = get(0);
+            result.inputPoolName = get(1);
+          }
+        }
+
+        if (!result.name || !result.inputPoolName) {
+          throw new Error(
+            "Missing meta row. Include a row with row_type=meta to provide experiment and input pool names."
+          );
+        }
+
+        resolve(result);
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+};
+
+export const downloadExperimentImportCSVTemplate = () => {
+  const sampleData = `row_type,name,input_pool_name,description,input_pool_description,evaluation_criteria,evaluation_question,question_text,question_category,question_type,model_name,question_index,response_text
+meta,"My Blind Test","My Question Pool","Experiment description","Question pool description","Judge which answer is more accurate.",,,,,,,
+evaluation_question,,,,,,"Which answer is more accurate?",,,,,,
+question,,,,,,,"What is artificial intelligence?","Technology","open",,,
+question,,,,,,,"Explain the water cycle","Science","open",,,
+model,,,,,,,,,,"GPT-4",,
+model,,,,,,,,,,"Claude",,
+response,,,,,,,,,,"GPT-4",0,"Artificial intelligence is..."
+response,,,,,,,,,,"Claude",0,"AI refers to..."
+response,,,,,,,,,,"GPT-4",1,"The water cycle includes..."
+response,,,,,,,,,,"Claude",1,"The water cycle is..."`;
+
+  const blob = new Blob([sampleData], { type: "text/csv" });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "sample-experiment-import.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+};
+
+export interface ParsedImportExperimentJSON {
+  name: string;
+  input_pool_name: string;
+  description?: string;
+  input_pool_description?: string;
+  evaluation_criteria?: string;
+  evaluation_questions: { evaluation_question: string }[];
+  questions: { text: string; category?: string; type?: string }[];
+  models: { name: string }[];
+  responses: { model_name: string; question_index: number; text: string }[];
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+export const parseExperimentImportJSON = (text: string): ParsedImportExperimentJSON => {
+  const parsed = JSON.parse(text);
+  if (!isRecord(parsed)) {
+    throw new Error("Import JSON must be an object.");
+  }
+
+  const evaluationQuestions = Array.isArray(parsed.evaluation_questions)
+    ? parsed.evaluation_questions
+        .filter(isRecord)
+        .map((item) => ({
+          evaluation_question:
+            typeof item.evaluation_question === "string" ? item.evaluation_question : "",
+        }))
+    : [];
+
+  const questions = Array.isArray(parsed.questions)
+    ? parsed.questions
+        .filter(isRecord)
+        .map((item) => ({
+          text: typeof item.text === "string" ? item.text : "",
+          category: typeof item.category === "string" ? item.category : undefined,
+          type: typeof item.type === "string" ? item.type : "open",
+        }))
+    : [];
+
+  const models = Array.isArray(parsed.models)
+    ? parsed.models
+        .filter(isRecord)
+        .map((item) => ({
+          name: typeof item.name === "string" ? item.name : "",
+        }))
+    : [];
+
+  const responses = Array.isArray(parsed.responses)
+    ? parsed.responses
+        .filter(isRecord)
+        .map((item) => ({
+          model_name: typeof item.model_name === "string" ? item.model_name : "",
+          question_index:
+            typeof item.question_index === "number" ? item.question_index : Number.NaN,
+          text: typeof item.text === "string" ? item.text : "",
+        }))
+    : [];
+
+  return {
+    name: typeof parsed.name === "string" ? parsed.name : "",
+    input_pool_name: typeof parsed.input_pool_name === "string" ? parsed.input_pool_name : "",
+    description: typeof parsed.description === "string" ? parsed.description : undefined,
+    input_pool_description:
+      typeof parsed.input_pool_description === "string"
+        ? parsed.input_pool_description
+        : undefined,
+    evaluation_criteria:
+      typeof parsed.evaluation_criteria === "string" ? parsed.evaluation_criteria : undefined,
+    evaluation_questions: evaluationQuestions,
+    questions,
+    models,
+    responses,
+  };
+};
+
+export const downloadExperimentImportJSONTemplate = () => {
+  const sampleData = {
+    name: "Mini Blind Test",
+    input_pool_name: "Mini Question Pool",
+    description: "Short import example",
+    input_pool_description: "Short pool description",
+    evaluation_criteria: "Pick the more accurate answer.",
+    evaluation_questions: [{ evaluation_question: "Which answer is more accurate?" }],
+    questions: [
+      { text: "What is AI?", category: "Technology", type: "open" },
+    ],
+    models: [{ name: "GPT-4" }, { name: "Claude" }],
+    responses: [
+      {
+        model_name: "GPT-4",
+        question_index: 0,
+        text: "AI is the field of creating systems that can perform tasks requiring human intelligence.",
+      },
+      {
+        model_name: "Claude",
+        question_index: 0,
+        text: "AI is a system that can learn patterns and generate answers.",
+      },
+    ],
+  };
+
+  const blob = new Blob([JSON.stringify(sampleData, null, 2)], { type: "application/json" });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "sample-experiment-import.json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+};

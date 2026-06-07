@@ -20,11 +20,13 @@ import {
 import { ChevronDown, ChevronUp, ClipboardList, Loader2 } from "lucide-react";
 import {
   deleteExperimentPreference,
+  archiveExperiment,
   getEvaluationQuestionsByExperiment,
   getExperimentModelAppearanceSummary,
   getExperimentModelPreferenceSummary,
   getExperimentModelRatings,
   getExperimentModelTokenUsage,
+  getArchivedExperiments,
   getExperiments,
   getInputPools,
   getModels,
@@ -129,6 +131,35 @@ type FailedModelState = {
   retryStatus: "idle" | "in_progress";
 };
 
+type ResultsCacheEntry = {
+  fingerprint: string;
+  detail: ExperimentResultDetail;
+  savedAt: number;
+};
+
+type ResultsCacheMap = Record<string, ResultsCacheEntry>;
+
+const RESULTS_CACHE_KEY = "bt_results_detail_cache_v1";
+const RESULTS_CACHE_MAX_AGE_MS = 1000 * 60 * 15;
+
+type QuestionPairGroup = {
+  pairKey: string;
+  modelAId: string;
+  modelBId: string;
+  modelAName: string;
+  modelBName: string;
+  tests: BackendTest[];
+  preferences: BackendPreference[];
+  modelAResponse?: BackendResponseItem;
+  modelBResponse?: BackendResponseItem;
+  modelAVotes: number;
+  modelBVotes: number;
+  bothGoodVotes: number;
+  bothPoorVotes: number;
+  modelAScore: number;
+  modelBScore: number;
+};
+
 const createEmptySummary = (
   experimentId: string
 ): BackendExperimentModelPreferenceSummary => ({
@@ -216,6 +247,52 @@ const formatPercentage = (value: number) =>
 
 const formatRatioAsPercentage = (value: number) => formatPercentage(value * 100);
 
+const formatVoteLabel = (value: number) => `${value} win${value === 1 ? "" : "s"}`;
+
+const readResultsCache = (): ResultsCacheMap => {
+  try {
+    const raw = sessionStorage.getItem(RESULTS_CACHE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw) as ResultsCacheMap;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
+  } catch {
+    return {};
+  }
+};
+
+const writeResultsCache = (cache: ResultsCacheMap) => {
+  try {
+    sessionStorage.setItem(RESULTS_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // Ignore quota / serialization failures.
+  }
+};
+
+const invalidateResultsCacheEntry = (experimentId: string) => {
+  const cache = readResultsCache();
+  if (!cache[experimentId]) {
+    return;
+  }
+  delete cache[experimentId];
+  writeResultsCache(cache);
+};
+
+const buildExperimentFingerprint = (experiment: BackendExperiment) =>
+  JSON.stringify({
+    name: experiment.name,
+    description: experiment.description,
+    evaluation_criteria: experiment.evaluation_criteria,
+    status: experiment.status,
+    source: experiment.source,
+    input_pool_id: experiment.input_pool_id,
+    metadata_json: experiment.metadata_json,
+  });
+
 const formatEloRating = (value: number | null | undefined) =>
   value === null || value === undefined ? "Not rated yet" : Math.round(value).toString();
 
@@ -232,6 +309,9 @@ const normalizeExperimentStatus = (status: string) => {
   if (lowered === "completed") {
     return "COMPLETED";
   }
+  if (lowered === "archived") {
+    return "ARCHIVED";
+  }
   return status.toUpperCase();
 };
 
@@ -242,6 +322,9 @@ const formatExperimentStatus = (status: string) => {
   }
   if (normalized === "COMPLETED") {
     return "Completed";
+  }
+  if (normalized === "ARCHIVED") {
+    return "Archived";
   }
   return status;
 };
@@ -400,6 +483,7 @@ const loadAppearanceSummaryMap = async (
 export const Results: React.FC = () => {
   const { experiments: appExperiments } = useApp();
   const [experiments, setExperiments] = useState<BackendExperiment[]>([]);
+  const [archivedExperiments, setArchivedExperiments] = useState<BackendExperiment[]>([]);
   const [models, setModels] = useState<BackendModel[]>([]);
   const [inputPools, setInputPools] = useState<BackendInputPool[]>([]);
   const [expandedExpId, setExpandedExpId] = useState<string | null>(null);
@@ -423,9 +507,14 @@ export const Results: React.FC = () => {
   const [showAlertToast, setShowAlertToast] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [showSuccessToast, setShowSuccessToast] = useState(false);
+  const [isArchivedExpanded, setIsArchivedExpanded] = useState(false);
+  const [isLoadingArchivedExperiments, setIsLoadingArchivedExperiments] = useState(false);
+  const [hasLoadedArchivedExperiments, setHasLoadedArchivedExperiments] = useState(false);
   const [removingModelKey, setRemovingModelKey] = useState<string | null>(null);
+  const [archivingExperimentId, setArchivingExperimentId] = useState<string | null>(null);
   const [deletingPreferenceId, setDeletingPreferenceId] = useState<string | null>(null);
   const [retryingModelKey, setRetryingModelKey] = useState<string | null>(null);
+  const [diagnosticsModelFilter, setDiagnosticsModelFilter] = useState<string>("ALL");
   const [expandedResultTabByExperiment, setExpandedResultTabByExperiment] = useState<
     Record<string, ResultTab>
   >({});
@@ -811,10 +900,21 @@ export const Results: React.FC = () => {
         getModels(accessToken),
         getInputPools(accessToken),
       ]);
+      const cache = readResultsCache();
 
       const overviewEntries = await Promise.all(
         experimentRows.map(async (experiment) => {
           try {
+            const fingerprint = buildExperimentFingerprint(experiment);
+            const cachedEntry = cache[experiment.id];
+            if (
+              cachedEntry &&
+              cachedEntry.fingerprint === fingerprint &&
+              Date.now() - cachedEntry.savedAt < RESULTS_CACHE_MAX_AGE_MS
+            ) {
+              return [experiment.id, cachedEntry.detail] as const;
+            }
+
             const [
               summaryResult,
               ratingsResult,
@@ -864,39 +964,50 @@ export const Results: React.FC = () => {
                 ? await loadAppearanceSummaryMap(accessToken, experiment.id, appearanceModelRows)
                 : {};
 
-            return [
-              experiment.id,
-              {
-                summary,
-                ratings,
-                appearanceByModel,
-                tokenUsage,
-                tests,
-                evaluationQuestions,
-                questionMap: {},
-                responsesByQuestion: {},
-                preferencesByTest: {},
-              } satisfies ExperimentResultDetail,
-            ] as const;
+            const detail = {
+              summary,
+              ratings,
+              appearanceByModel,
+              tokenUsage,
+              tests,
+              evaluationQuestions,
+              questionMap: {},
+              responsesByQuestion: {},
+              preferencesByTest: {},
+            } satisfies ExperimentResultDetail;
+
+            cache[experiment.id] = {
+              fingerprint,
+              detail,
+              savedAt: Date.now(),
+            };
+
+            return [experiment.id, detail] as const;
           } catch {
-            return [
-              experiment.id,
-              {
-                summary: createEmptySummary(experiment.id),
-                ratings: createEmptyRatingsSummary(experiment.id),
-                appearanceByModel: {},
-                tokenUsage: createEmptyTokenUsageSummary(experiment.id),
-                tests: [],
-                evaluationQuestions: [],
-                questionMap: {},
-                responsesByQuestion: {},
-                preferencesByTest: {},
-              } satisfies ExperimentResultDetail,
-            ] as const;
+            const fallbackDetail = {
+              summary: createEmptySummary(experiment.id),
+              ratings: createEmptyRatingsSummary(experiment.id),
+              appearanceByModel: {},
+              tokenUsage: createEmptyTokenUsageSummary(experiment.id),
+              tests: [],
+              evaluationQuestions: [],
+              questionMap: {},
+              responsesByQuestion: {},
+              preferencesByTest: {},
+            } satisfies ExperimentResultDetail;
+
+            cache[experiment.id] = {
+              fingerprint: buildExperimentFingerprint(experiment),
+              detail: fallbackDetail,
+              savedAt: Date.now(),
+            };
+
+            return [experiment.id, fallbackDetail] as const;
           }
         })
       );
 
+      writeResultsCache(cache);
       setExperiments(experimentRows);
       setModels(modelRows);
       setInputPools(poolRows);
@@ -917,9 +1028,36 @@ export const Results: React.FC = () => {
     void loadOverview();
   }, []);
 
+  const loadArchivedExperiments = async (force = false) => {
+    if (isLoadingArchivedExperiments) {
+      return;
+    }
+    if (hasLoadedArchivedExperiments && !force) {
+      return;
+    }
+
+    setIsLoadingArchivedExperiments(true);
+    try {
+      const accessToken = getAccessToken();
+      const rows = await getArchivedExperiments(accessToken);
+      setArchivedExperiments(rows);
+      setHasLoadedArchivedExperiments(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Archived experiments could not be loaded."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setIsLoadingArchivedExperiments(false);
+    }
+  };
+
   const loadExperimentDetail = async (experimentId: string) => {
     const existing = detailsByExperiment[experimentId];
     const experimentRow = experiments.find((item) => item.id === experimentId);
+    const fingerprint = experimentRow ? buildExperimentFingerprint(experimentRow) : "";
+    const cache = readResultsCache();
+    const cachedEntry = cache[experimentId];
     const isInProgressExperiment =
       normalizeExperimentStatus(experimentRow?.status || "") === "IN_PROGRESS";
     const failedQuestionIdsFromMetadata =
@@ -949,6 +1087,22 @@ export const Results: React.FC = () => {
       missingFailedQuestionIds.length === 0;
 
     if (hasDeepDetail) {
+      return;
+    }
+
+    if (
+      cachedEntry &&
+      fingerprint &&
+      cachedEntry.fingerprint === fingerprint &&
+      Date.now() - cachedEntry.savedAt < RESULTS_CACHE_MAX_AGE_MS &&
+      cachedEntry.detail &&
+      Object.keys(cachedEntry.detail.questionMap).length > 0 &&
+      Object.keys(cachedEntry.detail.preferencesByTest).length > 0
+    ) {
+      setDetailsByExperiment((prev) => ({
+        ...prev,
+        [experimentId]: cachedEntry.detail,
+      }));
       return;
     }
 
@@ -1062,6 +1216,27 @@ export const Results: React.FC = () => {
           preferencesByTest: Object.fromEntries(preferenceEntries),
         },
       }));
+
+      if (experimentRow) {
+        const nextDetail = {
+          summary,
+          ratings,
+          appearanceByModel,
+          tokenUsage,
+          tests,
+          evaluationQuestions,
+          questionMap: Object.fromEntries(questionEntries),
+          responsesByQuestion: baseDetail?.responsesByQuestion || {},
+          preferencesByTest: Object.fromEntries(preferenceEntries),
+        } satisfies ExperimentResultDetail;
+
+        cache[experimentId] = {
+          fingerprint,
+          detail: nextDetail,
+          savedAt: Date.now(),
+        };
+        writeResultsCache(cache);
+      }
     } catch (error) {
       setAlertMessage(
         error instanceof Error
@@ -1145,6 +1320,14 @@ export const Results: React.FC = () => {
     }));
   };
 
+  const handleToggleArchivedExperiments = async () => {
+    const next = !isArchivedExpanded;
+    setIsArchivedExpanded(next);
+    if (next && !hasLoadedArchivedExperiments) {
+      await loadArchivedExperiments();
+    }
+  };
+
   const handleSelectResultTab = (experimentId: string, tab: ResultTab) => {
     setExpandedResultTabByExperiment((prev) => ({
       ...prev,
@@ -1153,6 +1336,40 @@ export const Results: React.FC = () => {
 
     if (tab === "questions") {
       void loadExperimentResponses(experimentId);
+    }
+  };
+
+  const handleArchiveExperiment = async (experimentId: string, experimentName: string) => {
+    if (!window.confirm(`Archive "${experimentName}"?\n\nArchived experiments are hidden from the main list.`)) {
+      return;
+    }
+
+    const accessToken = getAccessToken();
+    setArchivingExperimentId(experimentId);
+    try {
+      await archiveExperiment(accessToken, experimentId);
+      invalidateResultsCacheEntry(experimentId);
+      setHasLoadedArchivedExperiments(false);
+      await loadOverview();
+      if (expandedExpId === experimentId) {
+        setExpandedExpId(null);
+        setExpandedQuestionByExperiment((prev) => ({
+          ...prev,
+          [experimentId]: null,
+        }));
+      }
+      if (isArchivedExpanded) {
+        await loadArchivedExperiments(true);
+      }
+      setSuccessMessage(`"${experimentName}" was archived.`);
+      setShowSuccessToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Experiment could not be archived."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setArchivingExperimentId(null);
     }
   };
 
@@ -1179,6 +1396,7 @@ export const Results: React.FC = () => {
     setRemovingModelKey(actionKey);
     try {
       await removeModelFromExperiment(accessToken, experimentId, modelId);
+      invalidateResultsCacheEntry(experimentId);
       await loadOverview();
       if (expandedExpId === experimentId) {
         await loadExperimentDetail(experimentId);
@@ -1205,6 +1423,7 @@ export const Results: React.FC = () => {
     setRetryingModelKey(actionKey);
     try {
       await retryExperimentModelResponses(accessToken, experimentId, modelId);
+      invalidateResultsCacheEntry(experimentId);
       await loadOverview();
       if (expandedExpId === experimentId) {
         await loadExperimentDetail(experimentId);
@@ -1230,6 +1449,7 @@ export const Results: React.FC = () => {
     setDeletingPreferenceId(preferenceId);
     try {
       await deleteExperimentPreference(accessToken, preferenceId);
+      invalidateResultsCacheEntry(experimentId);
       await loadOverview();
       if (expandedExpId === experimentId) {
         await loadExperimentDetail(experimentId);
@@ -1383,6 +1603,10 @@ export const Results: React.FC = () => {
             {filteredExperiments.map((experiment) => {
               const detail = detailsByExperiment[experiment.id];
               const runSummary = extractRunSummary(experiment);
+              const normalizedExperimentStatus = normalizeExperimentStatus(experiment.status);
+              const canArchiveExperiment = normalizedExperimentStatus === "COMPLETED";
+              const isImportedExperiment = experiment.source === "imported";
+              const canRetryFailedModels = !isImportedExperiment;
               const isLoadingDetail = loadingDetailId === experiment.id;
               const questionPoolName =
                 inputPoolMap[experiment.input_pool_id]?.name || "Unknown Question Pool";
@@ -1440,9 +1664,6 @@ export const Results: React.FC = () => {
                 expandedResultTabByExperiment[experiment.id] ?? "overview";
               const expandedQuestionId = expandedQuestionByExperiment[experiment.id] || null;
               const isQuestionResponsesLoading = loadingQuestionResponsesId === experiment.id;
-              const testNumberById = detail
-                ? Object.fromEntries(detail.tests.map((test, index) => [test.id, index + 1]))
-                : {};
               const failedModels = extractFailedModels(experiment);
               const failedResponseDetails: FailedResponseDetail[] = extractRecentFailures(
                 experiment
@@ -1466,6 +1687,15 @@ export const Results: React.FC = () => {
                   error: item.error,
                 };
               });
+              const diagnosticsModelOptions = [
+                ...new Map(
+                  failedResponseDetails.map((item) => [item.modelId, item.modelName] as const)
+                ).entries(),
+              ].sort((left, right) => left[1].localeCompare(right[1]));
+              const filteredFailedResponseDetails =
+                diagnosticsModelFilter === "ALL"
+                  ? failedResponseDetails
+                  : failedResponseDetails.filter((item) => item.modelId === diagnosticsModelFilter);
 
               return (
                 <div
@@ -1479,15 +1709,36 @@ export const Results: React.FC = () => {
                           <h3 className="text-xl font-bold text-foreground">
                             {experiment.name}
                           </h3>
+                          {canArchiveExperiment && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-3 text-xs"
+                              disabled={archivingExperimentId === experiment.id}
+                              onClick={() =>
+                                void handleArchiveExperiment(experiment.id, experiment.name)
+                              }
+                            >
+                              {archivingExperimentId === experiment.id
+                                ? "Archiving..."
+                                : "Archive"}
+                            </Button>
+                          )}
                           <span
                             className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                              normalizeExperimentStatus(experiment.status) === "COMPLETED"
+                              normalizedExperimentStatus === "COMPLETED"
                                 ? "bg-primary/20 text-primary"
+                                : normalizedExperimentStatus === "ARCHIVED"
+                                  ? "bg-muted text-muted-foreground"
                                 : "bg-accent/20 text-accent-foreground"
                             }`}
                           >
                             {formatExperimentStatus(experiment.status)}
                           </span>
+                          {isImportedExperiment && (
+                            <Badge variant="outline">Imported</Badge>
+                          )}
                           <Badge variant="secondary">Top Model: {topBadgeLabel}</Badge>
                         </div>
                         <p className="text-sm text-muted-foreground">
@@ -1518,7 +1769,7 @@ export const Results: React.FC = () => {
                                       ? ` · Elo ${formatEloRating(row.eloRating)}`
                                       : ""}
                                   </Badge>
-                                  {failedState && (
+                                  {failedState && canRetryFailedModels && (
                                     <>
                                       <Badge variant="secondary">
                                         Failed ({failedState.totalFailCount})
@@ -1551,6 +1802,11 @@ export const Results: React.FC = () => {
                                           : "Retry"}
                                       </Button>
                                     </>
+                                  )}
+                                  {failedState && !canRetryFailedModels && (
+                                    <Badge variant="secondary">
+                                      Failed ({failedState.totalFailCount})
+                                    </Badge>
                                   )}
                                   <Button
                                     type="button"
@@ -1949,23 +2205,100 @@ export const Results: React.FC = () => {
                                         (a, b) => b[1] - a[1]
                                       );
                                       const leader = leadingEntries[0];
-                                      const winnerPreferenceCount = leadingEntries.reduce(
-                                        (sum, [, count]) => sum + count,
-                                        0
-                                      );
-                                      const leaderPercentage = leader
-                                        ? getPercentage(leader[1], winnerPreferenceCount)
-                                        : 0;
                                       const isQuestionExpanded =
                                         expandedQuestionId === group.questionId;
-                                      const testsForQuestion = group.testIds
-                                        .map((testId) =>
-                                          detail.tests.find((test) => test.id === testId)
-                                        )
-                                        .filter((test): test is BackendTest => Boolean(test));
-                                      const questionPreferences = testsForQuestion.flatMap(
-                                        (test) => detail.preferencesByTest[test.id] || []
-                                      );
+                                                      const testsForQuestion = group.testIds
+                                                        .map((testId) =>
+                                                          detail.tests.find((test) => test.id === testId)
+                                                        )
+                                                        .filter((test): test is BackendTest => Boolean(test));
+                                                      const questionPreferences = testsForQuestion.flatMap(
+                                                        (test) => detail.preferencesByTest[test.id] || []
+                                                      );
+                                                      const pairGroups = Array.from(
+                                                        testsForQuestion.reduce(
+                                                          (acc, test) => {
+                                                            const pairKey = getPairKey(
+                                                              test.model_a_id,
+                                                              test.model_b_id
+                                                            );
+                                                            const existing = acc.get(pairKey) || {
+                                                              pairKey,
+                                                              modelAId: test.model_a_id,
+                                                              modelBId: test.model_b_id,
+                                                              modelAName: getModelName(
+                                                                test.model_a_id,
+                                                                detail
+                                                              ),
+                                                              modelBName: getModelName(
+                                                                test.model_b_id,
+                                                                detail
+                                                              ),
+                                                              tests: [],
+                                                              preferences: [],
+                                                              modelAResponse: undefined,
+                                                              modelBResponse: undefined,
+                                                              modelAVotes: 0,
+                                                              modelBVotes: 0,
+                                                              bothGoodVotes: 0,
+                                                              bothPoorVotes: 0,
+                                                              modelAScore: 0,
+                                                              modelBScore: 0,
+                                                            } satisfies QuestionPairGroup;
+
+                                                            const preferences =
+                                                              detail.preferencesByTest[test.id] || [];
+                                                            const responsesForQuestion =
+                                                              detail.responsesByQuestion[test.question_id] ||
+                                                              [];
+                                                            existing.tests.push(test);
+                                                            existing.preferences.push(...preferences);
+                                                            existing.modelAResponse =
+                                                              existing.modelAResponse ||
+                                                              responsesForQuestion.find(
+                                                                (response) =>
+                                                                  response.experiment_id === experiment.id &&
+                                                                  response.model_id === test.model_a_id
+                                                              );
+                                                            existing.modelBResponse =
+                                                              existing.modelBResponse ||
+                                                              responsesForQuestion.find(
+                                                                (response) =>
+                                                                  response.experiment_id === experiment.id &&
+                                                                  response.model_id === test.model_b_id
+                                                              );
+                                                            existing.modelAVotes += preferences.filter(
+                                                              (preference) =>
+                                                                preference.preferred_model_id ===
+                                                                test.model_a_id
+                                                            ).length;
+                                                            existing.modelBVotes += preferences.filter(
+                                                              (preference) =>
+                                                                preference.preferred_model_id ===
+                                                                test.model_b_id
+                                                            ).length;
+                                                            existing.bothGoodVotes += preferences.filter(
+                                                              (preference) =>
+                                                                preference.is_both_good ||
+                                                                preference.result_type === "both_good"
+                                                            ).length;
+                                                            existing.bothPoorVotes += preferences.filter(
+                                                              (preference) =>
+                                                                preference.is_both_poor ||
+                                                                preference.result_type === "both_poor"
+                                                            ).length;
+                                                            existing.modelAScore =
+                                                              existing.modelAVotes +
+                                                              existing.bothGoodVotes;
+                                                            existing.modelBScore =
+                                                              existing.modelBVotes +
+                                                              existing.bothGoodVotes;
+                                                            acc.set(pairKey, existing);
+                                                            return acc;
+                                                          },
+                                                          new Map<string, QuestionPairGroup>()
+                                                        ).values()
+                                                      );
 
                                       return (
                                           <div key={group.questionId}>
@@ -1995,21 +2328,6 @@ export const Results: React.FC = () => {
                                             </div>
 
                                             <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                                              <Badge variant="outline">
-                                                {group.testIds.length} blind test
-                                                {group.testIds.length !== 1 ? "s" : ""}
-                                              </Badge>
-                                              <Badge variant="outline">
-                                                {group.preferenceCount} vote
-                                                {group.preferenceCount !== 1 ? "s" : ""}
-                                              </Badge>
-                                              <Badge variant="secondary">
-                                                {leader
-                                                  ? `${getModelName(leader[0], detail)} (${formatPercentage(
-                                                      leaderPercentage
-                                                    )})`
-                                                  : "No leader yet"}
-                                              </Badge>
                                               <span className="flex items-center gap-1 text-sm font-medium text-primary">
                                                 {isQuestionExpanded ? (
                                                   <>
@@ -2028,341 +2346,212 @@ export const Results: React.FC = () => {
 
                                           {isQuestionExpanded && (
                                             <div className="border-t border-border bg-muted/10 px-4 py-4">
-                                              <div className="grid gap-4 xl:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
-                                                <div className="space-y-4">
-                                                  <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
-                                                    <div className="flex items-center justify-between gap-3">
-                                                      <p className="text-sm font-semibold text-foreground">
-                                                        Vote distribution
-                                                      </p>
-                                                      <Badge variant="outline">
-                                                        {group.preferenceCount} vote
-                                                        {group.preferenceCount !== 1 ? "s" : ""}
-                                                      </Badge>
-                                                    </div>
+                                              {detail.evaluationQuestions.length > 0 && (
+                                                <div className="mb-4 rounded-xl border border-border/70 bg-background/80 p-3">
+                                                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                                    Criteria outcomes
+                                                  </p>
+                                                  <div className="mt-2 space-y-2">
+                                                    {detail.evaluationQuestions.map((questionItem) => {
+                                                      const matchingPreferences =
+                                                        questionPreferences.filter(
+                                                          (preference) =>
+                                                            preference.evaluation_question_id ===
+                                                            questionItem.id
+                                                        );
+                                                      const criterionLeader = Object.entries(
+                                                        matchingPreferences.reduce<
+                                                          Record<string, number>
+                                                        >((acc, preference) => {
+                                                          if (!preference.preferred_model_id) {
+                                                            return acc;
+                                                          }
+                                                          acc[preference.preferred_model_id] =
+                                                            (acc[preference.preferred_model_id] ||
+                                                              0) + 1;
+                                                          return acc;
+                                                        }, {})
+                                                      ).sort((left, right) => right[1] - left[1])[0];
+                                                      const criterionBothGoodCount =
+                                                        matchingPreferences.filter(
+                                                          (preference) =>
+                                                            preference.is_both_good ||
+                                                            preference.result_type === "both_good"
+                                                        ).length;
+                                                      const criterionBothPoorCount =
+                                                        matchingPreferences.filter(
+                                                          (preference) =>
+                                                            preference.is_both_poor ||
+                                                            preference.result_type === "both_poor"
+                                                        ).length;
 
-                                                    {leadingEntries.length === 0 ? (
-                                                      <p className="mt-3 text-sm text-muted-foreground">
-                                                        No winner selections recorded for this question yet.
-                                                      </p>
-                                                    ) : (
-                                                      <div className="mt-3 flex flex-wrap gap-2">
-                                                        {leadingEntries.map(([modelId, count]) => (
-                                                          <Badge
-                                                            key={`${group.questionId}-${modelId}`}
-                                                            variant="secondary"
-                                                          >
-                                                            {getModelName(modelId, detail)}: {count} (
-                                                            {formatPercentage(
-                                                              getPercentage(
-                                                                count,
-                                                                winnerPreferenceCount
-                                                              )
-                                                            )}
-                                                            )
-                                                          </Badge>
-                                                        ))}
-                                                      </div>
-                                                    )}
-
-                                                    {(group.bothGoodCount > 0 ||
-                                                      group.bothPoorCount > 0) && (
-                                                      <div className="mt-3 flex flex-wrap gap-2">
-                                                        {group.bothGoodCount > 0 && (
-                                                          <Badge variant="outline">
-                                                            Both Good: {group.bothGoodCount}
-                                                          </Badge>
-                                                        )}
-                                                        {group.bothPoorCount > 0 && (
-                                                          <Badge variant="outline">
-                                                            Both Poor: {group.bothPoorCount}
-                                                          </Badge>
-                                                        )}
-                                                      </div>
-                                                    )}
+                                                      return (
+                                                        <div
+                                                          key={questionItem.id}
+                                                          className="flex items-center justify-between gap-3 rounded-lg bg-muted/40 px-3 py-2 text-sm"
+                                                        >
+                                                          <span className="text-muted-foreground">
+                                                            {questionItem.evaluation_question}
+                                                          </span>
+                                                          <span className="font-medium text-foreground">
+                                                            {criterionLeader
+                                                              ? `${getModelName(criterionLeader[0], detail)} (${formatVoteLabel(
+                                                                  criterionLeader[1]
+                                                                )})`
+                                                              : criterionBothGoodCount > 0
+                                                                  ? `Both Good (${criterionBothGoodCount})`
+                                                                  : criterionBothPoorCount > 0
+                                                                    ? `Both Poor (${criterionBothPoorCount})`
+                                                                  : "No preference saved"}
+                                                          </span>
+                                                        </div>
+                                                      );
+                                                    })}
                                                   </div>
+                                                </div>
+                                              )}
 
-                                                  {detail.evaluationQuestions.length > 0 && (
-                                                    <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
-                                                      <p className="text-sm font-semibold text-foreground">
-                                                        Criteria outcomes for this question
-                                                      </p>
-                                                      <div className="mt-3 space-y-2">
-                                                        {detail.evaluationQuestions.map(
-                                                          (questionItem) => {
-                                                            const matchingPreferences =
-                                                              questionPreferences.filter(
+                                              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                                                {pairGroups.length === 0 ? (
+                                                  <div className="rounded-xl border border-border/70 bg-background/80 p-4 text-sm text-muted-foreground">
+                                                    No blind tests are grouped under this question yet.
+                                                  </div>
+                                                ) : (
+                                                  pairGroups.map((pair) => {
+                                                    return (
+                                                      <div
+                                                        key={pair.pairKey}
+                                                        className="rounded-xl border border-border/70 bg-background/80 p-4"
+                                                      >
+                                                        <div className="flex items-start justify-between gap-3">
+                                                          <div className="min-w-0 flex-1">
+                                                            <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-border bg-muted/20 px-3 py-1.5">
+                                                              <span className="truncate font-medium text-foreground">
+                                                                {pair.modelAName}
+                                                              </span>
+                                                              <span className="rounded-full bg-background px-2 py-0.5 text-xs font-semibold text-foreground">
+                                                                {pair.modelAScore}
+                                                              </span>
+                                                              <span className="text-xs font-semibold tracking-wide text-muted-foreground">
+                                                                -
+                                                              </span>
+                                                              <span className="rounded-full bg-background px-2 py-0.5 text-xs font-semibold text-foreground">
+                                                                {pair.modelBScore}
+                                                              </span>
+                                                              <span className="truncate font-medium text-foreground">
+                                                                {pair.modelBName}
+                                                              </span>
+                                                            </div>
+                                                          </div>
+                                                        </div>
+
+                                                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                                          <div className="rounded-lg bg-muted/30 px-3 py-3">
+                                                            <div className="mb-2 flex items-center justify-between gap-2">
+                                                              <p className="text-sm font-medium text-foreground">
+                                                                {pair.modelAName}
+                                                              </p>
+                                                            </div>
+                                                            <div className="max-h-44 overflow-y-auto pr-1">
+                                                              <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                                                                {pair.modelAResponse?.model_response ||
+                                                                  "Response not found."}
+                                                              </p>
+                                                            </div>
+                                                          </div>
+
+                                                          <div className="rounded-lg bg-muted/30 px-3 py-3">
+                                                            <div className="mb-2 flex items-center justify-between gap-2">
+                                                              <p className="text-sm font-medium text-foreground">
+                                                                {pair.modelBName}
+                                                              </p>
+                                                            </div>
+                                                            <div className="max-h-44 overflow-y-auto pr-1">
+                                                              <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                                                                {pair.modelBResponse?.model_response ||
+                                                                  "Response not found."}
+                                                              </p>
+                                                            </div>
+                                                          </div>
+                                                        </div>
+
+                                                        <div className="mt-4 border-t border-border/60 pt-3">
+                                                          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                                            Recorded preferences
+                                                          </p>
+                                                          <div className="space-y-2">
+                                                            {detail.evaluationQuestions.map((questionItem) => {
+                                                              const matchingPreferences = pair.preferences.filter(
                                                                 (preference) =>
                                                                   preference.evaluation_question_id ===
                                                                   questionItem.id
                                                               );
-                                                            const criterionLeader = Object.entries(
-                                                              matchingPreferences.reduce<
-                                                                Record<string, number>
-                                                              >((acc, preference) => {
-                                                                if (!preference.preferred_model_id) {
-                                                                  return acc;
-                                                                }
-                                                                acc[preference.preferred_model_id] =
-                                                                  (acc[preference.preferred_model_id] || 0) + 1;
-                                                                return acc;
-                                                              }, {})
-                                                            ).sort((left, right) => right[1] - left[1])[0];
-                                                            const criterionLeaderPercentage =
-                                                              criterionLeader
-                                                                ? getPercentage(
-                                                                    criterionLeader[1],
-                                                                    Object.values(
-                                                                      matchingPreferences.reduce<
-                                                                        Record<string, number>
-                                                                      >((acc, preference) => {
-                                                                        if (!preference.preferred_model_id) {
-                                                                          return acc;
-                                                                        }
-                                                                        acc[preference.preferred_model_id] =
-                                                                          (acc[
-                                                                            preference.preferred_model_id
-                                                                          ] || 0) + 1;
-                                                                        return acc;
-                                                                      }, {})
-                                                                    ).reduce((sum, count) => sum + count, 0)
-                                                                  )
-                                                                : 0;
-                                                            const criterionBothGoodCount =
-                                                              matchingPreferences.filter(
-                                                                (preference) =>
-                                                                  preference.is_both_good ||
-                                                                  preference.result_type === "both_good"
-                                                              ).length;
-                                                            const criterionBothPoorCount =
-                                                              matchingPreferences.filter(
-                                                                (preference) =>
-                                                                  preference.is_both_poor ||
-                                                                  preference.result_type === "both_poor"
-                                                              ).length;
+                                                              const preferredModelName = getPreferenceOutcomeLabel(
+                                                                matchingPreferences[0],
+                                                                detail,
+                                                                pair.tests[0]
+                                                              );
 
-                                                            return (
-                                                              <div
-                                                                key={questionItem.id}
-                                                                className="flex items-start justify-between gap-4 rounded-lg border border-border/70 bg-muted/20 px-3 py-3 text-sm"
-                                                              >
-                                                                <span className="text-muted-foreground">
-                                                                  {questionItem.evaluation_question}
-                                                                </span>
-                                                                <span className="text-right font-medium text-foreground">
-                                                                  {criterionLeader
-                                                                    ? `${getModelName(
-                                                                        criterionLeader[0],
-                                                                        detail
-                                                                      )} (${criterionLeader[1]} • ${formatPercentage(
-                                                                        criterionLeaderPercentage
-                                                                      )})`
-                                                                    : criterionBothGoodCount > 0
-                                                                      ? `Both Good (${criterionBothGoodCount})`
-                                                                      : criterionBothPoorCount > 0
-                                                                        ? `Both Poor (${criterionBothPoorCount})`
-                                                                    : "No preference saved"}
-                                                                </span>
-                                                              </div>
-                                                            );
-                                                          }
+                                                              return (
+                                                                <div
+                                                                  key={questionItem.id}
+                                                                  className="grid gap-1 rounded-lg bg-muted/20 px-3 py-2 text-sm md:grid-cols-[minmax(0,1fr)_auto]"
+                                                                >
+                                                                  <p className="min-w-0 text-muted-foreground">
+                                                                    {questionItem.evaluation_question}
+                                                                  </p>
+                                                                  <div className="flex flex-wrap items-center gap-2 md:justify-end">
+                                                                    <span className="font-medium text-foreground">
+                                                                      {preferredModelName}
+                                                                    </span>
+                                                                    {matchingPreferences[0] && (
+                                                                      <Button
+                                                                        type="button"
+                                                                        size="sm"
+                                                                        variant="outline"
+                                                                        className="h-6 px-2 text-xs"
+                                                                        disabled={
+                                                                          deletingPreferenceId ===
+                                                                          matchingPreferences[0].id
+                                                                        }
+                                                                        onClick={() =>
+                                                                          void handleDeletePreference(
+                                                                            experiment.id,
+                                                                            matchingPreferences[0].id
+                                                                          )
+                                                                        }
+                                                                      >
+                                                                        {deletingPreferenceId ===
+                                                                        matchingPreferences[0].id
+                                                                          ? "Deleting..."
+                                                                          : "Delete"}
+                                                                      </Button>
+                                                                    )}
+                                                                  </div>
+                                                                </div>
+                                                              );
+                                                            })}
+                                                          </div>
+                                                        </div>
+
+                                                        {(pair.bothGoodVotes > 0 || pair.bothPoorVotes > 0) && (
+                                                          <div className="mt-3 flex flex-wrap gap-2">
+                                                            {pair.bothGoodVotes > 0 && (
+                                                              <Badge variant="outline">
+                                                                Both Good: {pair.bothGoodVotes}
+                                                              </Badge>
+                                                            )}
+                                                            {pair.bothPoorVotes > 0 && (
+                                                              <Badge variant="outline">
+                                                                Both Poor: {pair.bothPoorVotes}
+                                                              </Badge>
+                                                            )}
+                                                          </div>
                                                         )}
                                                       </div>
-                                                    </div>
-                                                  )}
-                                                </div>
-
-                                                <div className="space-y-3">
-                                                  {testsForQuestion.length === 0 ? (
-                                                    <div className="rounded-xl border border-border bg-background p-4 shadow-sm">
-                                                      <p className="text-sm text-muted-foreground">
-                                                        No blind tests are grouped under this question yet.
-                                                      </p>
-                                                    </div>
-                                                  ) : (
-                                                    testsForQuestion.map((test) => {
-                                                      const responsesForQuestion =
-                                                        detail.responsesByQuestion[test.question_id] ||
-                                                        [];
-                                                      const modelAResponse =
-                                                        responsesForQuestion.find(
-                                                          (response) =>
-                                                            response.experiment_id === experiment.id &&
-                                                            response.model_id === test.model_a_id
-                                                        );
-                                                      const modelBResponse =
-                                                        responsesForQuestion.find(
-                                                          (response) =>
-                                                            response.experiment_id === experiment.id &&
-                                                            response.model_id === test.model_b_id
-                                                        );
-                                                      const preferences =
-                                                        detail.preferencesByTest[test.id] || [];
-                                                      const modelAVotes = preferences.filter(
-                                                        (preference) =>
-                                                          preference.preferred_model_id === test.model_a_id
-                                                      ).length;
-                                                      const modelBVotes = preferences.filter(
-                                                        (preference) =>
-                                                          preference.preferred_model_id === test.model_b_id
-                                                      ).length;
-                                                      const bothGoodVotes = preferences.filter(
-                                                        (preference) =>
-                                                          preference.is_both_good ||
-                                                          preference.result_type === "both_good"
-                                                      ).length;
-                                                      const bothPoorVotes = preferences.filter(
-                                                        (preference) =>
-                                                          preference.is_both_poor ||
-                                                          preference.result_type === "both_poor"
-                                                      ).length;
-                                                      const modelAName = getModelName(
-                                                        test.model_a_id,
-                                                        detail
-                                                      );
-                                                      const modelBName = getModelName(
-                                                        test.model_b_id,
-                                                        detail
-                                                      );
-
-                                                      return (
-                                                        <div
-                                                          key={test.id}
-                                                          className="rounded-2xl border border-border bg-background p-5 shadow-sm"
-                                                        >
-                                                          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                                            <div>
-                                                              <h5 className="font-semibold text-foreground">
-                                                                Blind Test {testNumberById[test.id] || 0}
-                                                              </h5>
-                                                              <p className="text-sm text-muted-foreground">
-                                                                {new Date(test.created_at).toLocaleString()}
-                                                              </p>
-                                                            </div>
-
-                                                            <div className="flex flex-wrap gap-2">
-                                                              <Badge variant="outline">{modelAName}</Badge>
-                                                              <Badge variant="outline">{modelBName}</Badge>
-                                                              <Badge variant="secondary">
-                                                                {modelAVotes} - {modelBVotes}
-                                                              </Badge>
-                                                              {bothGoodVotes > 0 && (
-                                                                <Badge variant="outline">
-                                                                  Both Good: {bothGoodVotes}
-                                                                </Badge>
-                                                              )}
-                                                              {bothPoorVotes > 0 && (
-                                                                <Badge variant="outline">
-                                                                  Both Poor: {bothPoorVotes}
-                                                                </Badge>
-                                                              )}
-                                                            </div>
-                                                          </div>
-
-                                                          <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                                                            <div className="rounded-xl border border-border bg-muted/20 p-4 shadow-sm">
-                                                              <div className="mb-2 flex items-center justify-between gap-3">
-                                                                <p className="text-sm font-semibold text-foreground">
-                                                                  {modelAName}
-                                                                </p>
-                                                                <span className="text-xs text-muted-foreground">
-                                                                  {modelAVotes} vote
-                                                                  {modelAVotes !== 1 ? "s" : ""}
-                                                                </span>
-                                                              </div>
-                                                              <div className="max-h-52 overflow-y-auto pr-1">
-                                                                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                                                                  {modelAResponse?.model_response || "Response not found."}
-                                                                </p>
-                                                              </div>
-                                                            </div>
-
-                                                            <div className="rounded-xl border border-border bg-muted/20 p-4 shadow-sm">
-                                                              <div className="mb-2 flex items-center justify-between gap-3">
-                                                                <p className="text-sm font-semibold text-foreground">
-                                                                  {modelBName}
-                                                                </p>
-                                                                <span className="text-xs text-muted-foreground">
-                                                                  {modelBVotes} vote
-                                                                  {modelBVotes !== 1 ? "s" : ""}
-                                                                </span>
-                                                              </div>
-                                                              <div className="max-h-52 overflow-y-auto pr-1">
-                                                                <p className="whitespace-pre-wrap text-sm text-muted-foreground">
-                                                                  {modelBResponse?.model_response || "Response not found."}
-                                                                </p>
-                                                              </div>
-                                                            </div>
-                                                          </div>
-
-                                                          {detail.evaluationQuestions.length > 0 && (
-                                                            <div className="mt-4 rounded-xl border border-border bg-muted/10 p-4 shadow-sm">
-                                                              <p className="mb-3 text-sm font-semibold text-foreground">
-                                                                Recorded Preferences
-                                                              </p>
-                                                              <div className="grid gap-2 md:grid-cols-2">
-                                                                {detail.evaluationQuestions.map(
-                                                                  (questionItem) => {
-                                                                    const matchingPreference = preferences.find(
-                                                                      (preference) =>
-                                                                        preference.evaluation_question_id ===
-                                                                        questionItem.id
-                                                                    );
-                                                                    const preferredModelName =
-                                                                      getPreferenceOutcomeLabel(
-                                                                        matchingPreference,
-                                                                        detail,
-                                                                        test
-                                                                      );
-
-                                                                    return (
-                                                                      <div
-                                                                        key={questionItem.id}
-                                                                        className="rounded-xl border border-border/70 bg-background px-3 py-3 text-sm shadow-sm"
-                                                                      >
-                                                                        <div className="flex items-start justify-between gap-2">
-                                                                          <p className="text-muted-foreground">
-                                                                            {questionItem.evaluation_question}
-                                                                          </p>
-                                                                          {matchingPreference && (
-                                                                            <Button
-                                                                              type="button"
-                                                                              size="sm"
-                                                                              variant="outline"
-                                                                              className="h-6 px-2 text-xs"
-                                                                              disabled={
-                                                                                deletingPreferenceId ===
-                                                                                matchingPreference.id
-                                                                              }
-                                                                              onClick={() =>
-                                                                                void handleDeletePreference(
-                                                                                  experiment.id,
-                                                                                  matchingPreference.id
-                                                                                )
-                                                                              }
-                                                                            >
-                                                                              {deletingPreferenceId ===
-                                                                              matchingPreference.id
-                                                                                ? "Deleting..."
-                                                                                : "Delete"}
-                                                                            </Button>
-                                                                          )}
-                                                                        </div>
-                                                                        <p className="mt-1 font-medium text-foreground">
-                                                                          {preferredModelName}
-                                                                        </p>
-                                                                      </div>
-                                                                    );
-                                                                  }
-                                                                )}
-                                                              </div>
-                                                            </div>
-                                                          )}
-                                                        </div>
-                                                      );
-                                                    })
-                                                  )}
-                                                </div>
+                                                    );
+                                                  })
+                                                )}
                                               </div>
                                             </div>
                                           )}
@@ -2386,13 +2575,34 @@ export const Results: React.FC = () => {
                                 </div>
                                 <Badge variant="secondary">{failedResponseDetails.length}</Badge>
                               </div>
-                              {failedResponseDetails.length === 0 ? (
+                              <div className="mb-4 max-w-sm">
+                                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                                  Filter by model
+                                </p>
+                                <Select
+                                  value={diagnosticsModelFilter}
+                                  onValueChange={setDiagnosticsModelFilter}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="All models" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="ALL">All models</SelectItem>
+                                    {diagnosticsModelOptions.map(([modelId, modelName]) => (
+                                      <SelectItem key={modelId} value={modelId}>
+                                        {modelName}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              {filteredFailedResponseDetails.length === 0 ? (
                                 <p className="text-sm text-muted-foreground">
                                   No failures were recorded for this experiment.
                                 </p>
                               ) : (
                                 <div className="grid gap-4 xl:grid-cols-2">
-                                  {failedResponseDetails.map((item, index) => (
+                                  {filteredFailedResponseDetails.map((item, index) => (
                                     <div
                                       key={`${item.testId}-${item.modelId}-${index}`}
                                       className="rounded-xl border border-border bg-muted/20 p-4 shadow-sm"
@@ -2441,6 +2651,75 @@ export const Results: React.FC = () => {
             })}
           </div>
         )}
+      </Card>
+
+      <Card title={`Archived Experiments (${archivedExperiments.length})`}>
+        <div className="space-y-4">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void handleToggleArchivedExperiments()}
+            className="w-full justify-between"
+          >
+            <span>{isArchivedExpanded ? "Hide archived experiments" : "Show archived experiments"}</span>
+            {isArchivedExpanded ? (
+              <ChevronUp className="h-4 w-4" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+          </Button>
+
+          {isArchivedExpanded && (
+            <>
+              {isLoadingArchivedExperiments ? (
+                <div className="py-10 text-center text-muted-foreground">
+                  <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin" />
+                  Loading archived experiments...
+                </div>
+              ) : archivedExperiments.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No archived experiments.</p>
+              ) : (
+                <div className="space-y-3">
+                  {archivedExperiments.map((experiment) => {
+                    const questionPoolName =
+                      inputPoolMap[experiment.input_pool_id]?.name || "Unknown Question Pool";
+                    return (
+                      <div
+                        key={experiment.id}
+                        className="rounded-xl border border-border bg-muted/10 px-4 py-4 shadow-sm"
+                      >
+                        <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-2 flex flex-wrap items-center gap-2">
+                              <h3 className="text-lg font-semibold text-foreground">
+                                {experiment.name}
+                              </h3>
+                              <Badge variant="outline">Archived</Badge>
+                              <Badge variant="secondary">
+                                {formatExperimentStatus(experiment.status)}
+                              </Badge>
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                              Question Pool: <strong>{questionPoolName}</strong>
+                            </p>
+                            {experiment.evaluation_criteria && (
+                              <p className="mt-1 text-sm text-muted-foreground">
+                                Criteria: {experiment.evaluation_criteria}
+                              </p>
+                            )}
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Created: {new Date(experiment.created_at).toLocaleString()}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </Card>
     </div>
   );

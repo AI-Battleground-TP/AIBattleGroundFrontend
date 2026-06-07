@@ -86,9 +86,23 @@ export interface BackendExperiment {
   name: string;
   description?: string | null;
   evaluation_criteria?: string | null;
+  source?: "generated" | "imported";
   status: string;
   created_at: string;
   metadata_json?: Record<string, unknown> | null;
+}
+
+export interface ExperimentImportRequest {
+  name: string;
+  input_pool_name: string;
+  description?: string | null;
+  input_pool_description?: string | null;
+  evaluation_criteria?: string | null;
+  organization_id: string;
+  evaluation_questions: { evaluation_question: string }[];
+  questions: { text: string; category?: string | null; type?: string }[];
+  models: { name: string }[];
+  responses: { model_name: string; question_index: number; text: string }[];
 }
 
 export interface BackendEvaluationQuestion {
@@ -736,6 +750,18 @@ export const createExperiment = (
     body: JSON.stringify(payload),
   });
 
+export const importExperiment = (
+  accessToken: string,
+  payload: ExperimentImportRequest
+) =>
+  requestJson<BackendExperiment>("/experiments/import", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
 export const startExperiment = (accessToken: string, experimentId: string) =>
   requestJson<{ message: string; task_id: string; experiment_id: string }>(
     `/experiments/${experimentId}/start`,
@@ -746,6 +772,14 @@ export const startExperiment = (accessToken: string, experimentId: string) =>
       },
     }
   );
+
+export const archiveExperiment = (accessToken: string, experimentId: string) =>
+  requestJson<BackendExperiment>(`/experiments/${experimentId}/archive`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
 
 export const attachModelToExperiment = (
   accessToken: string,
@@ -817,6 +851,21 @@ export const getCompletedExperiments = (
       Authorization: `Bearer ${accessToken}`,
     },
   });
+
+export const getArchivedExperiments = (
+  accessToken: string,
+  skip = 0,
+  limit = 100
+) =>
+  requestJson<BackendExperiment[]>(
+    `/experiments/archived?skip=${skip}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
 
 export const getExperiments = (accessToken: string, skip = 0, limit = 100) =>
   requestJson<BackendExperiment[]>(`/experiments?skip=${skip}&limit=${limit}`, {

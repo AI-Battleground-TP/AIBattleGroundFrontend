@@ -1,0 +1,39 @@
+{
+  "name": "Mini Blind Test",
+  "input_pool_name": "Mini Question Pool",
+  "description": "Short import example",
+  "input_pool_description": "Short pool description",
+  "evaluation_criteria": "Pick the more accurate answer.",
+  "evaluation_questions": [
+    {
+      "evaluation_question": "Which answer is more accurate?"
+    }
+  ],
+  "questions": [
+    {
+      "text": "What is AI?",
+      "category": "Technology",
+      "type": "open"
+    }
+  ],
+  "models": [
+    {
+      "name": "GPT-4"
+    },
+    {
+      "name": "Claude"
+    }
+  ],
+  "responses": [
+    {
+      "model_name": "GPT-4",
+      "question_index": 0,
+      "text": "AI is the field of creating systems that can perform tasks requiring human intelligence."
+    },
+    {
+      "model_name": "Claude",
+      "question_index": 0,
+      "text": "AI is a system that can learn patterns and generate answers."
+    }
+  ]
+}

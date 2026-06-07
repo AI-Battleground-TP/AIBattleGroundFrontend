@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, Card, Toast, Textarea } from "../../components";
 import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "../../components/ui/accordion";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -18,8 +24,18 @@ import {
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { ChevronDown, Info, Loader2 } from "lucide-react";
 import { useApp } from "../../context/AppContext";
+import { useAuth } from "../../context/AuthContext";
 import { cn } from "@/lib/utils";
 import type { ModelPoolItem, Question } from "../../types";
+import {
+  importExperiment,
+  type ExperimentImportRequest,
+} from "../../lib/authApi";
+import {
+  downloadExperimentImportJSONTemplate,
+  parseExperimentImportJSON,
+  type ParsedImportExperimentJSON,
+} from "../../utils/csvParser";
 
 type SelectedModelEntry = {
   selectionId: string;
@@ -33,6 +49,7 @@ type SelectedModelView = ModelPoolItem & {
 
 export const Dashboard: React.FC = () => {
   const { models, questionPools, addExperiment, loadModels, loadQuestionPools } = useApp();
+  const { user } = useAuth();
   
   // Form state
   const [experimentTitle, setExperimentTitle] = useState("");
@@ -42,9 +59,16 @@ export const Dashboard: React.FC = () => {
   const [evaluationCriteria, setEvaluationCriteria] = useState("");
   const [customQuestions, setCustomQuestions] = useState<string[]>([""]);
   const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
   const [showAlertToast, setShowAlertToast] = useState(false);
   const [alertMessage, setAlertMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isImportingExperiment, setIsImportingExperiment] = useState(false);
+  const [importJsonFileName, setImportJsonFileName] = useState("");
+  const [importJsonText, setImportJsonText] = useState("");
+  const [parsedImportJson, setParsedImportJson] = useState<ParsedImportExperimentJSON | null>(
+    null
+  );
 
   const handleAddModelEntry = (modelId: string) => {
     const selectionId =
@@ -134,6 +158,7 @@ export const Dashboard: React.FC = () => {
       setSelectedPoolId("");
       setEvaluationCriteria("");
       setCustomQuestions([""]);
+      setToastMessage("Your experiment has started. You can follow progress on the Results page.");
       setShowToast(true);
     } catch (error) {
       setAlertMessage(
@@ -219,6 +244,211 @@ export const Dashboard: React.FC = () => {
     }));
   };
 
+  const resetImportState = () => {
+    setImportJsonFileName("");
+    setImportJsonText("");
+    setParsedImportJson(null);
+  };
+
+  const validateParsedImportJson = (parsed: ParsedImportExperimentJSON) => {
+    const errors: string[] = [];
+
+    if (!parsed.name.trim()) {
+      errors.push("Missing experiment name.");
+    }
+    if (!parsed.input_pool_name.trim()) {
+      errors.push("Missing input pool name.");
+    }
+    if (parsed.evaluation_questions.length === 0) {
+      errors.push("Add at least one evaluation question.");
+    }
+    if (parsed.questions.length === 0) {
+      errors.push("Add at least one question.");
+    }
+    if (parsed.models.length < 2) {
+      errors.push("Add at least two models.");
+    }
+    if (parsed.responses.length === 0) {
+      errors.push("Add response rows for every model/question pair.");
+    }
+
+    const modelNames = parsed.models.map((model) => model.name.trim());
+    const uniqueModelNames = new Set(modelNames);
+    if (uniqueModelNames.size !== modelNames.length) {
+      errors.push("Model names must be unique.");
+    }
+
+    const evaluationQuestionTexts = parsed.evaluation_questions.map((item) =>
+      item.evaluation_question.trim()
+    );
+    const uniqueEvaluationQuestionTexts = new Set(evaluationQuestionTexts);
+    if (uniqueEvaluationQuestionTexts.size !== evaluationQuestionTexts.length) {
+      errors.push("Evaluation questions must be unique.");
+    }
+
+    parsed.questions.forEach((question, index) => {
+      if (!question.text.trim()) {
+        errors.push(`Question row ${index + 1} is empty.`);
+      }
+    });
+
+    const modelIndexByName = new Map(modelNames.map((name, index) => [name, index]));
+    const responseMap = new Map<string, number>();
+
+    parsed.responses.forEach((response, index) => {
+      if (!modelIndexByName.has(response.model_name.trim())) {
+        errors.push(`Unknown model name in response row ${index + 1}: ${response.model_name}`);
+        return;
+      }
+
+      if (
+        !Number.isInteger(response.question_index) ||
+        response.question_index < 0 ||
+        response.question_index >= parsed.questions.length
+      ) {
+        errors.push(
+          `Invalid question_index in response row ${index + 1}: ${response.question_index}`
+        );
+        return;
+      }
+
+      const key = `${response.model_name.trim()}::${response.question_index}`;
+      responseMap.set(key, (responseMap.get(key) || 0) + 1);
+    });
+
+    const expectedResponseCount = parsed.models.length * parsed.questions.length;
+    if (parsed.responses.length !== expectedResponseCount) {
+      errors.push(
+        `Expected ${expectedResponseCount} response rows, but found ${parsed.responses.length}.`
+      );
+    }
+
+    const missingPairs: string[] = [];
+    parsed.models.forEach((model) => {
+      parsed.questions.forEach((_, questionIndex) => {
+        const key = `${model.name.trim()}::${questionIndex}`;
+        const count = responseMap.get(key) || 0;
+        if (count === 0) {
+          missingPairs.push(`${model.name.trim()} #${questionIndex + 1}`);
+        }
+        if (count > 1) {
+          errors.push(
+            `Duplicate responses found for ${model.name.trim()} question #${questionIndex + 1}.`
+          );
+        }
+      });
+    });
+
+    if (missingPairs.length > 0) {
+      errors.push(`Missing responses for: ${missingPairs.slice(0, 5).join(", ")}${missingPairs.length > 5 ? "..." : ""}`);
+    }
+
+    return errors;
+  };
+
+  const handleImportCsvFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      const parsed = parseExperimentImportJSON(text);
+      setParsedImportJson(parsed);
+      setImportJsonText(text);
+      setImportJsonFileName(file.name);
+      setAlertMessage("");
+      setShowAlertToast(false);
+    } catch (error) {
+      setParsedImportJson(null);
+      setImportJsonFileName("");
+      setAlertMessage(
+        error instanceof Error ? error.message : "Error parsing JSON file. Please check the format."
+      );
+      setShowAlertToast(true);
+    }
+  };
+
+  const handleImportCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    if (!file.name.toLowerCase().endsWith(".json")) {
+      setAlertMessage("Please upload a .json file.");
+      setShowAlertToast(true);
+      return;
+    }
+    await handleImportCsvFile(file);
+  };
+
+  const handleImportCsvDownloadTemplate = () => {
+    downloadExperimentImportJSONTemplate();
+  };
+
+  const handleImportExperiment = async () => {
+    if (!user?.organizationId) {
+      setAlertMessage("Organization context is missing.");
+      setShowAlertToast(true);
+      return;
+    }
+
+    if (!parsedImportJson) {
+      setAlertMessage("Please upload a JSON file first.");
+      setShowAlertToast(true);
+      return;
+    }
+
+    const validationErrors = validateParsedImportJson(parsedImportJson);
+    if (validationErrors.length > 0) {
+      setAlertMessage(validationErrors[0]);
+      setShowAlertToast(true);
+      return;
+    }
+
+    const payload: ExperimentImportRequest = {
+      name: parsedImportJson.name.trim(),
+      input_pool_name: parsedImportJson.input_pool_name.trim(),
+      description: parsedImportJson.description?.trim() || undefined,
+      input_pool_description: parsedImportJson.input_pool_description?.trim() || undefined,
+      evaluation_criteria: parsedImportJson.evaluation_criteria?.trim() || undefined,
+      organization_id: user.organizationId,
+      evaluation_questions: parsedImportJson.evaluation_questions.map((item) => ({
+        evaluation_question: item.evaluation_question.trim(),
+      })),
+      questions: parsedImportJson.questions.map((question) => ({
+        text: question.text.trim(),
+        category: question.category?.trim() || undefined,
+        type: question.type || "open",
+      })),
+      models: parsedImportJson.models.map((model) => ({
+        name: model.name.trim(),
+      })),
+      responses: parsedImportJson.responses.map((response) => ({
+        model_name: response.model_name.trim(),
+        question_index: response.question_index,
+        text: response.text.trim(),
+      })),
+    };
+
+    setIsImportingExperiment(true);
+    try {
+      const accessToken = localStorage.getItem("bt_access_token");
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+      await importExperiment(accessToken, payload);
+      setToastMessage("Experiment imported successfully. It is already completed and ready for judges.");
+      setShowToast(true);
+      resetImportState();
+      await loadModels().catch(() => undefined);
+      await loadQuestionPools().catch(() => undefined);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Experiment could not be imported."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setIsImportingExperiment(false);
+    }
+  };
+
   useEffect(() => {
     loadModels().catch(() => undefined);
     loadQuestionPools().catch(() => undefined);
@@ -228,7 +458,7 @@ export const Dashboard: React.FC = () => {
     <div className="space-y-8">
       {showToast && (
         <Toast
-          message="Your experiment has started. You can follow progress on the Results page."
+          message={toastMessage}
           type="success"
           onClose={() => setShowToast(false)}
         />
@@ -567,6 +797,189 @@ export const Dashboard: React.FC = () => {
             Start Experiment
           </Button>
         </form>
+      </Card>
+
+      <Card title="Import Experiment From JSON">
+        <div className="space-y-5">
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertDescription>
+              <strong>JSON import:</strong> Paste or upload a single structured JSON object that includes
+              the experiment metadata, questions, models, and responses. The import will
+              create a completed experiment directly, without running model generation.
+            </AlertDescription>
+          </Alert>
+
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+            <div className="min-w-0 space-y-4">
+              <div
+                className={cn(
+                  "rounded-xl border-2 border-dashed p-5 transition-colors",
+                  importJsonFileName ? "border-primary bg-primary/5" : "border-border bg-muted/10"
+                )}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                }}
+                onDrop={async (event) => {
+                  event.preventDefault();
+                  const file = event.dataTransfer.files?.[0];
+                  if (!file) {
+                    return;
+                  }
+                  await handleImportCsvFile(file);
+                }}
+              >
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  id="import-experiment-json"
+                  onChange={handleImportCsvUpload}
+                />
+                <div className="space-y-3 text-center">
+                  <div>
+                    <p className="text-base font-semibold text-foreground">
+                      Drag and drop your import JSON here
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Or choose a file that matches the sample format below.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => document.getElementById("import-experiment-json")?.click()}
+                      disabled={isImportingExperiment}
+                    >
+                      Choose JSON
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleImportCsvDownloadTemplate}
+                      disabled={isImportingExperiment}
+                    >
+                      Download sample JSON
+                    </Button>
+                  </div>
+                  {importJsonFileName && (
+                    <p className="text-sm text-primary">
+                      Selected file: <strong>{importJsonFileName}</strong>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <Accordion type="single" defaultValue="sample-format">
+                <AccordionItem value="sample-format">
+                  <AccordionTrigger
+                    className="cursor-default pointer-events-none hover:no-underline"
+                  >
+                    JSON format
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <p className="mb-3 text-sm text-muted-foreground">
+                      Use one JSON object with experiment metadata, question arrays, model arrays,
+                      and response arrays.
+                    </p>
+                    <div className="overflow-hidden rounded-xl border border-border bg-muted/20 p-3">
+                      <img
+                        src="/example-exp.png"
+                        alt="Sample experiment JSON format"
+                        className="block w-full rounded-lg border border-border bg-background object-cover"
+                      />
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </div>
+
+            <div className="min-w-0 space-y-4">
+              <div className="rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-sm font-semibold text-foreground">Parsed summary</p>
+                {parsedImportJson ? (
+                  <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                    <p>
+                      Experiment: <span className="text-foreground">{parsedImportJson.name}</span>
+                    </p>
+                    <p>
+                      Question pool:{" "}
+                      <span className="text-foreground">{parsedImportJson.input_pool_name}</span>
+                    </p>
+                    <p>
+                      Questions: <span className="text-foreground">{parsedImportJson.questions.length}</span>
+                    </p>
+                    <p>
+                      Models: <span className="text-foreground">{parsedImportJson.models.length}</span>
+                    </p>
+                    <p>
+                      Evaluation questions: <span className="text-foreground">{parsedImportJson.evaluation_questions.length}</span>
+                    </p>
+                    <p>
+                      Responses: <span className="text-foreground">{parsedImportJson.responses.length}</span>
+                    </p>
+                    {parsedImportJson.evaluation_criteria && (
+                      <p>
+                        Criteria: <span className="text-foreground">{parsedImportJson.evaluation_criteria}</span>
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Upload or paste JSON to preview the import payload.
+                  </p>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-sm font-semibold text-foreground">Rules</p>
+                <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
+                  <li>• `name` and `input_pool_name` are required.</li>
+                  <li>• `questions` must contain at least 1 item.</li>
+                  <li>• `models` must contain at least 2 unique names.</li>
+                  <li>• `responses` must cover every model/question pair exactly once.</li>
+                </ul>
+              </div>
+
+              <div className="rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-sm font-semibold text-foreground">Paste JSON</p>
+                <Textarea
+                  className="mt-3"
+                  placeholder='{"name":"Mini Blind Test", ...}'
+                  value={importJsonText}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setImportJsonText(value);
+                    if (!value.trim()) {
+                      setParsedImportJson(null);
+                      setImportJsonFileName("");
+                      return;
+                    }
+                    try {
+                      const parsed = parseExperimentImportJSON(value);
+                      setParsedImportJson(parsed);
+                    } catch {
+                      setParsedImportJson(null);
+                    }
+                  }}
+                  rows={10}
+                  disabled={isImportingExperiment}
+                />
+              </div>
+
+              <Button
+                type="button"
+                className="w-full"
+                size="lg"
+                disabled={!parsedImportJson || isImportingExperiment}
+                onClick={() => void handleImportExperiment()}
+              >
+                {isImportingExperiment ? "Importing Experiment..." : "Import Experiment"}
+              </Button>
+            </div>
+          </div>
+        </div>
       </Card>
 
       {/* Quick Stats */}

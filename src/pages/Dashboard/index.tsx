@@ -1,12 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, Card, Toast, Textarea } from "../../components";
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "../../components/ui/accordion";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -455,7 +449,7 @@ export const Dashboard: React.FC = () => {
         parsed.models.length >= 2 ? parsed.models : [{ name: "" }, { name: "" }];
       setImportResponseGrid(
         nextQuestions.map((_, rowIndex) =>
-          nextModels.map((model, colIndex) => ({
+          nextModels.map((model) => ({
             text:
               parsed.responses.find(
                 (response) =>

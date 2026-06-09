@@ -33,6 +33,7 @@ const SUPPORTED_PROVIDER_IDS = [
   "aisuite_azure",
   "aisuite_openai",
   "aisuite_aws",
+  "aisuite_huggingface",
   "openrouter",
 ] as const;
 
@@ -60,6 +61,12 @@ const FALLBACK_PROVIDERS: LlmProviderInfo[] = [
     kind: "aisuite",
     model_string_hint: "Bedrock model id, e.g. anthropic.claude-3-5-sonnet-20240620-v1:0",
     env_vars: ["AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+  },
+  {
+    id: "aisuite_huggingface",
+    kind: "aisuite",
+    model_string_hint: "HF repo id, e.g. org/fine-tuned-model or huggingface:org/fine-tuned-model",
+    env_vars: ["HF_TOKEN"],
   },
 ];
 
@@ -119,6 +126,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   aisuite_openai: "OpenAI",
   aisuite_azure: "Azure",
   aisuite_aws: "AWS",
+  aisuite_huggingface: "Hugging Face",
 };
 
 const API_KEY_MASK_PREFIX = "************";
@@ -919,6 +927,12 @@ export const Models: React.FC = () => {
                   ))}
                 </SelectContent>
               </Select>
+              {form.providerId === "aisuite_huggingface" && (
+                <p className="text-xs text-muted-foreground">
+                  Hugging Face fine-tuned models can be added here. Use the repo id
+                  for the model you want to run.
+                </p>
+              )}
             </div>
             <TextField
               label="Model String"
@@ -930,7 +944,11 @@ export const Models: React.FC = () => {
             />
             <TextField
               label="API Key"
-              hint="Secret key used to authenticate requests for this model when needed."
+              hint={
+                form.providerId === "aisuite_huggingface"
+                  ? "Hugging Face token for fine-tuned models. Fine-tuned Hugging Face models can be added here."
+                  : "Secret key used to authenticate requests for this model when needed."
+              }
               type="password"
               value={form.apiKey}
               onChange={(apiKey) => setForm((prev) => ({ ...prev, apiKey }))}

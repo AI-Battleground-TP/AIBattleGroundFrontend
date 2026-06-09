@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Card, Input, Toast } from "../../components";
-import { useApp } from "../../context/AppContext";
+import { Button, Card, Input, Textarea, Toast } from "../../components";
 import { Badge } from "../../components/ui/badge";
 import {
   Select,
@@ -21,6 +20,7 @@ import { ChevronDown, ChevronUp, ClipboardList, Loader2 } from "lucide-react";
 import {
   deleteExperimentPreference,
   archiveExperiment,
+  attachModelToExperiment,
   getEvaluationQuestionsByExperiment,
   getExperimentModelAppearanceSummary,
   getExperimentModelPreferenceSummary,
@@ -131,17 +131,6 @@ type FailedModelState = {
   retryStatus: "idle" | "in_progress";
 };
 
-type ResultsCacheEntry = {
-  fingerprint: string;
-  detail: ExperimentResultDetail;
-  savedAt: number;
-};
-
-type ResultsCacheMap = Record<string, ResultsCacheEntry>;
-
-const RESULTS_CACHE_KEY = "bt_results_detail_cache_v1";
-const RESULTS_CACHE_MAX_AGE_MS = 1000 * 60 * 15;
-
 type QuestionPairGroup = {
   pairKey: string;
   modelAId: string;
@@ -248,50 +237,6 @@ const formatPercentage = (value: number) =>
 const formatRatioAsPercentage = (value: number) => formatPercentage(value * 100);
 
 const formatVoteLabel = (value: number) => `${value} win${value === 1 ? "" : "s"}`;
-
-const readResultsCache = (): ResultsCacheMap => {
-  try {
-    const raw = sessionStorage.getItem(RESULTS_CACHE_KEY);
-    if (!raw) {
-      return {};
-    }
-    const parsed = JSON.parse(raw) as ResultsCacheMap;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
-    }
-    return parsed;
-  } catch {
-    return {};
-  }
-};
-
-const writeResultsCache = (cache: ResultsCacheMap) => {
-  try {
-    sessionStorage.setItem(RESULTS_CACHE_KEY, JSON.stringify(cache));
-  } catch {
-    // Ignore quota / serialization failures.
-  }
-};
-
-const invalidateResultsCacheEntry = (experimentId: string) => {
-  const cache = readResultsCache();
-  if (!cache[experimentId]) {
-    return;
-  }
-  delete cache[experimentId];
-  writeResultsCache(cache);
-};
-
-const buildExperimentFingerprint = (experiment: BackendExperiment) =>
-  JSON.stringify({
-    name: experiment.name,
-    description: experiment.description,
-    evaluation_criteria: experiment.evaluation_criteria,
-    status: experiment.status,
-    source: experiment.source,
-    input_pool_id: experiment.input_pool_id,
-    metadata_json: experiment.metadata_json,
-  });
 
 const formatEloRating = (value: number | null | undefined) =>
   value === null || value === undefined ? "Not rated yet" : Math.round(value).toString();
@@ -428,6 +373,22 @@ const extractFailedModels = (experiment: BackendExperiment): FailedModelState[] 
     .filter((item) => item.modelId);
 };
 
+const extractModelSummaryRows = (experiment: BackendExperiment) => {
+  const metadata = isObjectRecord(experiment.metadata_json) ? experiment.metadata_json : null;
+  const modelSummary =
+    metadata && isObjectRecord(metadata.model_summary) ? metadata.model_summary : null;
+  const modelRows = modelSummary && Array.isArray(modelSummary.models) ? modelSummary.models : [];
+
+  return modelRows
+    .filter(isObjectRecord)
+    .map((item) => ({
+      modelId: typeof item.model_id === "string" ? item.model_id : "",
+      modelName: typeof item.model_name === "string" ? item.model_name : "",
+      retryStatus: item.retry_status === "in_progress" ? "in_progress" : "idle",
+    }))
+    .filter((item) => item.modelId);
+};
+
 const buildMissingQuestionFallback = (questionId: string): BackendQuestion => ({
   id: questionId,
   input_pool_id: "",
@@ -481,7 +442,6 @@ const loadAppearanceSummaryMap = async (
 };
 
 export const Results: React.FC = () => {
-  const { experiments: appExperiments } = useApp();
   const [experiments, setExperiments] = useState<BackendExperiment[]>([]);
   const [archivedExperiments, setArchivedExperiments] = useState<BackendExperiment[]>([]);
   const [models, setModels] = useState<BackendModel[]>([]);
@@ -512,8 +472,16 @@ export const Results: React.FC = () => {
   const [hasLoadedArchivedExperiments, setHasLoadedArchivedExperiments] = useState(false);
   const [removingModelKey, setRemovingModelKey] = useState<string | null>(null);
   const [archivingExperimentId, setArchivingExperimentId] = useState<string | null>(null);
+  const [addingModelExperimentId, setAddingModelExperimentId] = useState<string | null>(null);
+  const [selectedNewModelByExperiment, setSelectedNewModelByExperiment] = useState<
+    Record<string, string>
+  >({});
+  const [newModelPromptByExperiment, setNewModelPromptByExperiment] = useState<
+    Record<string, string>
+  >({});
+  const [isSubmittingNewModelKey, setIsSubmittingNewModelKey] = useState<string | null>(null);
   const [deletingPreferenceId, setDeletingPreferenceId] = useState<string | null>(null);
-  const [retryingModelKey, setRetryingModelKey] = useState<string | null>(null);
+  const [retryingModelKeys, setRetryingModelKeys] = useState<Record<string, boolean>>({});
   const [diagnosticsModelFilter, setDiagnosticsModelFilter] = useState<string>("ALL");
   const [expandedResultTabByExperiment, setExpandedResultTabByExperiment] = useState<
     Record<string, ResultTab>
@@ -537,11 +505,6 @@ export const Results: React.FC = () => {
     [inputPools]
   );
 
-  const appExperimentMap = useMemo(
-    () => Object.fromEntries(appExperiments.map((experiment) => [experiment.id, experiment])),
-    [appExperiments]
-  );
-
   const getModelName = (modelId: string, detail?: ExperimentResultDetail) =>
     modelMap[modelId]?.name ||
     detail?.summary.model_breakdown.find((row) => row.model_id === modelId)?.model_name ||
@@ -555,11 +518,10 @@ export const Results: React.FC = () => {
     detail?: ExperimentResultDetail
   ) => {
     if (!detail) {
-      const appExperiment = appExperimentMap[experiment.id];
       return [
         ...new Set([
+          ...extractModelSummaryRows(experiment).map((item) => item.modelId),
           ...extractFailedModels(experiment).map((item) => item.modelId),
-          ...(appExperiment?.selectedModels.map((model) => model.id) || []),
         ]),
       ];
     }
@@ -573,11 +535,6 @@ export const Results: React.FC = () => {
 
     detail.summary.model_breakdown.forEach((row) => {
       modelIds.add(row.model_id);
-    });
-
-    const appExperiment = appExperimentMap[experiment.id];
-    appExperiment?.selectedModels.forEach((model) => {
-      modelIds.add(model.id);
     });
 
     detail.ratings?.model_ratings.forEach((row) => {
@@ -596,23 +553,37 @@ export const Results: React.FC = () => {
       modelIds.add(item.modelId);
     });
 
+    extractModelSummaryRows(experiment).forEach((item) => {
+      modelIds.add(item.modelId);
+    });
+
     return [...modelIds];
   };
 
   const getExperimentModelNames = (experiment: BackendExperiment, detail?: ExperimentResultDetail) =>
-    getExperimentModelIds(experiment, detail).map((modelId) => getModelName(modelId, detail));
+    getExperimentModelIds(experiment, detail).map((modelId) => {
+      const summaryRow = extractModelSummaryRows(experiment).find((item) => item.modelId === modelId);
+      return summaryRow?.modelName || getModelName(modelId, detail);
+    });
+
+  const getAvailableModelsToAdd = (experiment: BackendExperiment, detail?: ExperimentResultDetail) => {
+    const existingModelIds = new Set(getExperimentModelIds(experiment, detail));
+    return models
+      .filter((model) => model.is_active && !existingModelIds.has(model.id))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  };
 
   const getDisplayModelRows = (experiment: BackendExperiment, detail?: ExperimentResultDetail) => {
     const uniqueIds = getExperimentModelIds(experiment, detail);
-    const appExperiment = appExperimentMap[experiment.id];
     const normalizedStatus = normalizeExperimentStatus(experiment.status);
+    const modelSummaryRows = extractModelSummaryRows(experiment);
 
     return uniqueIds
       .map((modelId) => {
         const ratingRow = detail?.ratings?.model_ratings.find((row) => row.model_id === modelId);
         const tokenRow = detail?.tokenUsage?.model_breakdown.find((row) => row.model_id === modelId);
         const failedState = extractFailedModels(experiment).find((item) => item.modelId === modelId);
-        const appModel = appExperiment?.selectedModels.find((model) => model.id === modelId);
+        const modelSummaryRow = modelSummaryRows.find((row) => row.modelId === modelId);
         const appearanceRow = detail?.appearanceByModel[modelId];
         const appearsInTests =
           detail?.tests.some((test) => test.model_a_id === modelId || test.model_b_id === modelId) ||
@@ -644,11 +615,11 @@ export const Results: React.FC = () => {
           hasTokenSignal ||
           hasRatingSignal ||
           Boolean(failedState) ||
-          Boolean(appModel);
+          Boolean(modelSummaryRow);
 
         return {
           modelId,
-          modelName: appModel?.name || getModelName(modelId, detail),
+          modelName: modelSummaryRow?.modelName || getModelName(modelId, detail),
           eloRating: ratingRow?.rating ?? null,
           selectionRate: appearanceRow?.selection_rate ?? 0,
           totalTokens: tokenRow?.total_tokens ?? 0,
@@ -900,21 +871,10 @@ export const Results: React.FC = () => {
         getModels(accessToken),
         getInputPools(accessToken),
       ]);
-      const cache = readResultsCache();
 
       const overviewEntries = await Promise.all(
         experimentRows.map(async (experiment) => {
           try {
-            const fingerprint = buildExperimentFingerprint(experiment);
-            const cachedEntry = cache[experiment.id];
-            if (
-              cachedEntry &&
-              cachedEntry.fingerprint === fingerprint &&
-              Date.now() - cachedEntry.savedAt < RESULTS_CACHE_MAX_AGE_MS
-            ) {
-              return [experiment.id, cachedEntry.detail] as const;
-            }
-
             const [
               summaryResult,
               ratingsResult,
@@ -976,12 +936,6 @@ export const Results: React.FC = () => {
               preferencesByTest: {},
             } satisfies ExperimentResultDetail;
 
-            cache[experiment.id] = {
-              fingerprint,
-              detail,
-              savedAt: Date.now(),
-            };
-
             return [experiment.id, detail] as const;
           } catch {
             const fallbackDetail = {
@@ -996,18 +950,10 @@ export const Results: React.FC = () => {
               preferencesByTest: {},
             } satisfies ExperimentResultDetail;
 
-            cache[experiment.id] = {
-              fingerprint: buildExperimentFingerprint(experiment),
-              detail: fallbackDetail,
-              savedAt: Date.now(),
-            };
-
             return [experiment.id, fallbackDetail] as const;
           }
         })
       );
-
-      writeResultsCache(cache);
       setExperiments(experimentRows);
       setModels(modelRows);
       setInputPools(poolRows);
@@ -1055,9 +1001,6 @@ export const Results: React.FC = () => {
   const loadExperimentDetail = async (experimentId: string) => {
     const existing = detailsByExperiment[experimentId];
     const experimentRow = experiments.find((item) => item.id === experimentId);
-    const fingerprint = experimentRow ? buildExperimentFingerprint(experimentRow) : "";
-    const cache = readResultsCache();
-    const cachedEntry = cache[experimentId];
     const isInProgressExperiment =
       normalizeExperimentStatus(experimentRow?.status || "") === "IN_PROGRESS";
     const failedQuestionIdsFromMetadata =
@@ -1087,22 +1030,6 @@ export const Results: React.FC = () => {
       missingFailedQuestionIds.length === 0;
 
     if (hasDeepDetail) {
-      return;
-    }
-
-    if (
-      cachedEntry &&
-      fingerprint &&
-      cachedEntry.fingerprint === fingerprint &&
-      Date.now() - cachedEntry.savedAt < RESULTS_CACHE_MAX_AGE_MS &&
-      cachedEntry.detail &&
-      Object.keys(cachedEntry.detail.questionMap).length > 0 &&
-      Object.keys(cachedEntry.detail.preferencesByTest).length > 0
-    ) {
-      setDetailsByExperiment((prev) => ({
-        ...prev,
-        [experimentId]: cachedEntry.detail,
-      }));
       return;
     }
 
@@ -1216,27 +1143,6 @@ export const Results: React.FC = () => {
           preferencesByTest: Object.fromEntries(preferenceEntries),
         },
       }));
-
-      if (experimentRow) {
-        const nextDetail = {
-          summary,
-          ratings,
-          appearanceByModel,
-          tokenUsage,
-          tests,
-          evaluationQuestions,
-          questionMap: Object.fromEntries(questionEntries),
-          responsesByQuestion: baseDetail?.responsesByQuestion || {},
-          preferencesByTest: Object.fromEntries(preferenceEntries),
-        } satisfies ExperimentResultDetail;
-
-        cache[experimentId] = {
-          fingerprint,
-          detail: nextDetail,
-          savedAt: Date.now(),
-        };
-        writeResultsCache(cache);
-      }
     } catch (error) {
       setAlertMessage(
         error instanceof Error
@@ -1320,6 +1226,53 @@ export const Results: React.FC = () => {
     }));
   };
 
+  const handleToggleAddModel = (experimentId: string) => {
+    setAddingModelExperimentId((current) => (current === experimentId ? null : experimentId));
+  };
+
+  const handleAddModelToExperiment = async (
+    experiment: BackendExperiment,
+    selectedModelId: string
+  ) => {
+    const trimmedModelId = selectedModelId.trim();
+    if (!trimmedModelId) {
+      setAlertMessage("Please choose a model to add.");
+      setShowAlertToast(true);
+      return;
+    }
+
+    const systemPrompt = (newModelPromptByExperiment[experiment.id] || "").trim();
+    const accessToken = getAccessToken();
+    const actionKey = `${experiment.id}:${trimmedModelId}`;
+    const modelName = modelMap[trimmedModelId]?.name || "Selected model";
+
+    setIsSubmittingNewModelKey(actionKey);
+    try {
+      await attachModelToExperiment(accessToken, experiment.id, trimmedModelId, systemPrompt);
+      setHasLoadedArchivedExperiments(false);
+      await loadOverview();
+      await loadExperimentDetail(experiment.id);
+      setSelectedNewModelByExperiment((prev) => ({
+        ...prev,
+        [experiment.id]: "",
+      }));
+      setNewModelPromptByExperiment((prev) => ({
+        ...prev,
+        [experiment.id]: "",
+      }));
+      setAddingModelExperimentId(null);
+      setSuccessMessage(`"${modelName}" was added to the experiment.`);
+      setShowSuccessToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Model could not be added to the experiment."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setIsSubmittingNewModelKey(null);
+    }
+  };
+
   const handleToggleArchivedExperiments = async () => {
     const next = !isArchivedExpanded;
     setIsArchivedExpanded(next);
@@ -1348,7 +1301,6 @@ export const Results: React.FC = () => {
     setArchivingExperimentId(experimentId);
     try {
       await archiveExperiment(accessToken, experimentId);
-      invalidateResultsCacheEntry(experimentId);
       setHasLoadedArchivedExperiments(false);
       await loadOverview();
       if (expandedExpId === experimentId) {
@@ -1396,7 +1348,6 @@ export const Results: React.FC = () => {
     setRemovingModelKey(actionKey);
     try {
       await removeModelFromExperiment(accessToken, experimentId, modelId);
-      invalidateResultsCacheEntry(experimentId);
       await loadOverview();
       if (expandedExpId === experimentId) {
         await loadExperimentDetail(experimentId);
@@ -1420,23 +1371,24 @@ export const Results: React.FC = () => {
   ) => {
     const accessToken = getAccessToken();
     const actionKey = `${experimentId}:${modelId}`;
-    setRetryingModelKey(actionKey);
+    setRetryingModelKeys((prev) => ({
+      ...prev,
+      [actionKey]: true,
+    }));
     try {
       await retryExperimentModelResponses(accessToken, experimentId, modelId);
-      invalidateResultsCacheEntry(experimentId);
-      await loadOverview();
-      if (expandedExpId === experimentId) {
-        await loadExperimentDetail(experimentId);
-      }
       setSuccessMessage(`Retry queued for "${modelName}".`);
       setShowSuccessToast(true);
     } catch (error) {
+      setRetryingModelKeys((prev) => {
+        const next = { ...prev };
+        delete next[actionKey];
+        return next;
+      });
       setAlertMessage(
         error instanceof Error ? error.message : "Retry could not be started for this model."
       );
       setShowAlertToast(true);
-    } finally {
-      setRetryingModelKey(null);
     }
   };
 
@@ -1449,7 +1401,6 @@ export const Results: React.FC = () => {
     setDeletingPreferenceId(preferenceId);
     try {
       await deleteExperimentPreference(accessToken, preferenceId);
-      invalidateResultsCacheEntry(experimentId);
       await loadOverview();
       if (expandedExpId === experimentId) {
         await loadExperimentDetail(experimentId);
@@ -1494,7 +1445,7 @@ export const Results: React.FC = () => {
         new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
       );
     });
-  }, [appExperimentMap, detailsByExperiment, experiments, searchTerm, sortBy, statusFilter]);
+  }, [detailsByExperiment, experiments, searchTerm, sortBy, statusFilter]);
 
   return (
     <div className="space-y-8">
@@ -1607,6 +1558,8 @@ export const Results: React.FC = () => {
               const canArchiveExperiment = normalizedExperimentStatus === "COMPLETED";
               const isImportedExperiment = experiment.source === "imported";
               const canRetryFailedModels = !isImportedExperiment;
+              const canAddModels =
+                !isImportedExperiment && normalizedExperimentStatus !== "ARCHIVED";
               const isLoadingDetail = loadingDetailId === experiment.id;
               const questionPoolName =
                 inputPoolMap[experiment.input_pool_id]?.name || "Unknown Question Pool";
@@ -1696,6 +1649,13 @@ export const Results: React.FC = () => {
                 diagnosticsModelFilter === "ALL"
                   ? failedResponseDetails
                   : failedResponseDetails.filter((item) => item.modelId === diagnosticsModelFilter);
+              const availableModelsToAdd = canAddModels
+                ? getAvailableModelsToAdd(experiment, detail)
+                : [];
+              const selectedNewModelId = selectedNewModelByExperiment[experiment.id] || "";
+              const newModelPrompt = newModelPromptByExperiment[experiment.id] || "";
+              const addModelActionKey = `${experiment.id}:${selectedNewModelId}`;
+              const isSubmittingNewModel = isSubmittingNewModelKey === addModelActionKey;
 
               return (
                 <div
@@ -1754,7 +1714,7 @@ export const Results: React.FC = () => {
                             {displayModelRows.map((row) => {
                               const actionKey = `${experiment.id}:${row.modelId}`;
                               const isRemoving = removingModelKey === actionKey;
-                              const isRetrying = retryingModelKey === actionKey;
+                              const isRetrying = Boolean(retryingModelKeys[actionKey]);
                               const failedState = failedModels.find(
                                 (item) => item.modelId === row.modelId
                               );
@@ -1798,8 +1758,8 @@ export const Results: React.FC = () => {
                                         }
                                       >
                                         {isRetrying || failedState.retryStatus === "in_progress"
-                                          ? "Retrying..."
-                                          : "Retry"}
+                                          ? "Running..."
+                                          : "Run"}
                                       </Button>
                                     </>
                                   )}
@@ -1827,6 +1787,80 @@ export const Results: React.FC = () => {
                                 </div>
                               );
                             })}
+                            {canAddModels && (
+                              <div className="inline-flex items-center gap-2 rounded-md border border-dashed border-border bg-background px-2 py-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 px-2 text-xs"
+                                  onClick={() => handleToggleAddModel(experiment.id)}
+                                  disabled={availableModelsToAdd.length === 0}
+                                >
+                                  {availableModelsToAdd.length === 0
+                                    ? "No models left to add"
+                                    : addingModelExperimentId === experiment.id
+                                      ? "Cancel"
+                                      : "Add model"}
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {canAddModels && addingModelExperimentId === experiment.id && (
+                          <div className="mt-4 rounded-xl border border-border bg-muted/20 p-4">
+                            <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)_auto] xl:items-end">
+                              <div>
+                                <p className="mb-2 text-sm font-medium text-foreground">
+                                  Model
+                                </p>
+                                <Select
+                                  value={selectedNewModelId || undefined}
+                                  onValueChange={(value) =>
+                                    setSelectedNewModelByExperiment((prev) => ({
+                                      ...prev,
+                                      [experiment.id]: value,
+                                    }))
+                                  }
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select a model" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {availableModelsToAdd.map((model) => (
+                                      <SelectItem key={model.id} value={model.id}>
+                                        {model.name}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <Textarea
+                                label="System Prompt"
+                                placeholder="Optional instructions for this model"
+                                value={newModelPrompt}
+                                onChange={(e) =>
+                                  setNewModelPromptByExperiment((prev) => ({
+                                    ...prev,
+                                    [experiment.id]: e.target.value,
+                                  }))
+                                }
+                                rows={3}
+                                className="mb-0"
+                              />
+                              <Button
+                                type="button"
+                                onClick={() =>
+                                  void handleAddModelToExperiment(experiment, selectedNewModelId)
+                                }
+                                disabled={!selectedNewModelId || isSubmittingNewModel}
+                              >
+                                {isSubmittingNewModel ? "Adding..." : "Add"}
+                              </Button>
+                            </div>
+                            <p className="mt-3 text-xs text-muted-foreground">
+                              Adding a model queues generation for the new model in this experiment.
+                            </p>
                           </div>
                         )}
                       </div>

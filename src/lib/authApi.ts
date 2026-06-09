@@ -1082,6 +1082,21 @@ export const getJudgeAnalyticsDetail = (accessToken: string, judgeId: string) =>
     },
   });
 
+export const removeJudgeFromOrganization = (
+  accessToken: string,
+  organizationId: string,
+  userId: string
+) =>
+  requestJson<{ id: string; user_id: string; organization_id: string }>(
+    `/organizations/${organizationId}/members/${userId}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
 export const deleteExperimentPreference = (
   accessToken: string,
   preferenceId: string

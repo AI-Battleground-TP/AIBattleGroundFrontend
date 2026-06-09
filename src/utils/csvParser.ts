@@ -132,6 +132,15 @@ export interface ParsedImportExperimentCSV {
   responses: { model_name: string; question_index: number; text: string }[];
 }
 
+const createEmptyImportCsvResult = (): ParsedImportExperimentCSV => ({
+  name: "",
+  inputPoolName: "",
+  evaluationQuestions: [],
+  questions: [],
+  models: [],
+  responses: [],
+});
+
 const parseCsvRow = (line: string) => {
   const cells: string[] = [];
   let current = "";
@@ -201,14 +210,53 @@ export const parseExperimentImportCSV = (file: File): Promise<ParsedImportExperi
         const hasExpectedHeader = requiredColumns.some((column) => header.includes(column));
         const startIndex = hasExpectedHeader ? 1 : 0;
 
-        const result: ParsedImportExperimentCSV = {
-          name: "",
-          inputPoolName: "",
-          evaluationQuestions: [],
-          questions: [],
-          models: [],
-          responses: [],
-        };
+        const result = createEmptyImportCsvResult();
+
+        const isSpreadsheetHeader =
+          header.length >= 3 && header[0] === "question" && header[1] === "category";
+
+        if (isSpreadsheetHeader) {
+          const modelNames = parseCsvRow(lines[0]).slice(2).map((value) => value.trim());
+          const filteredModelNames = modelNames.filter(Boolean);
+
+          if (filteredModelNames.length < 2) {
+            throw new Error("Spreadsheet CSV must include at least two model columns.");
+          }
+
+          result.models = filteredModelNames.map((name) => ({ name }));
+
+          for (let i = 1; i < lines.length; i += 1) {
+            const cells = parseCsvRow(lines[i]);
+            if (cells.every((cell) => !cell.trim())) {
+              continue;
+            }
+
+            const questionText = cells[0]?.trim() || "";
+            const category = cells[1]?.trim() || "";
+            if (!questionText) {
+              continue;
+            }
+
+            const questionIndex = result.questions.length;
+            result.questions.push({
+              text: questionText,
+              category: category || undefined,
+              type: "open",
+            });
+
+            filteredModelNames.forEach((modelName, modelIndex) => {
+              const responseText = cells[modelIndex + 2]?.trim() || "";
+              result.responses.push({
+                model_name: modelName,
+                question_index: questionIndex,
+                text: responseText,
+              });
+            });
+          }
+
+          resolve(result);
+          return;
+        }
 
         for (let i = startIndex; i < lines.length; i += 1) {
           const cells = parseCsvRow(lines[i]);
@@ -296,17 +344,9 @@ export const parseExperimentImportCSV = (file: File): Promise<ParsedImportExperi
 };
 
 export const downloadExperimentImportCSVTemplate = () => {
-  const sampleData = `row_type,name,input_pool_name,description,input_pool_description,evaluation_criteria,evaluation_question,question_text,question_category,question_type,model_name,question_index,response_text
-meta,"My Blind Test","My Question Pool","Experiment description","Question pool description","Judge which answer is more accurate.",,,,,,,
-evaluation_question,,,,,,"Which answer is more accurate?",,,,,,
-question,,,,,,,"What is artificial intelligence?","Technology","open",,,
-question,,,,,,,"Explain the water cycle","Science","open",,,
-model,,,,,,,,,,"GPT-4",,
-model,,,,,,,,,,"Claude",,
-response,,,,,,,,,,"GPT-4",0,"Artificial intelligence is..."
-response,,,,,,,,,,"Claude",0,"AI refers to..."
-response,,,,,,,,,,"GPT-4",1,"The water cycle includes..."
-response,,,,,,,,,,"Claude",1,"The water cycle is..."`;
+  const sampleData = `question,category,GPT-4,Claude
+"What is artificial intelligence?","Technology","Artificial intelligence is the field of building systems that perform tasks requiring human-like intelligence.","AI refers to computer systems that learn patterns, reason, and generate responses."
+"Explain the water cycle","Science","The water cycle includes evaporation, condensation, precipitation, and collection.","Water moves through evaporation, cloud formation, rainfall, and return to rivers or seas."`;
 
   const blob = new Blob([sampleData], { type: "text/csv" });
   const url = window.URL.createObjectURL(blob);

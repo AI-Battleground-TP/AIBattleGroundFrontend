@@ -120,6 +120,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     aisuite_openai: "OpenAI",
     aisuite_azure: "Azure",
     aisuite_aws: "AWS",
+    aisuite_huggingface: "Hugging Face",
     native_openai: "OpenAI",
     native_anthropic: "Anthropic",
   };

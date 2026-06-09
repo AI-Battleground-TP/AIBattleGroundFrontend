@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Card, Toast } from "../../components";
+import { Button, Card, Toast } from "../../components";
 import { Badge } from "../../components/ui/badge";
 import {
   Table,
@@ -13,6 +13,7 @@ import { Loader2 } from "lucide-react";
 import {
   getJudgeAnalyticsDetail,
   getJudgeAnalyticsList,
+  removeJudgeFromOrganization,
   type BackendJudgeAnalyticsDetailResponse,
   type BackendJudgeAnalyticsListItem,
   type BackendJudgeBiasSummary,
@@ -140,6 +141,7 @@ const SummarySection: React.FC<{
 
 export const Judges: React.FC = () => {
   const [judgeItems, setJudgeItems] = useState<BackendJudgeAnalyticsListItem[]>([]);
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [selectedJudgeId, setSelectedJudgeId] = useState<string | null>(null);
   const [selectedJudgeDetail, setSelectedJudgeDetail] =
     useState<BackendJudgeAnalyticsDetailResponse | null>(null);
@@ -147,6 +149,7 @@ export const Judges: React.FC = () => {
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const [showToast, setShowToast] = useState(false);
+  const [removingJudgeId, setRemovingJudgeId] = useState<string | null>(null);
 
   const getAccessToken = () => {
     const accessToken = localStorage.getItem("bt_access_token");
@@ -173,6 +176,42 @@ export const Judges: React.FC = () => {
     }
   };
 
+  const handleRemoveJudge = async (judge: BackendJudgeAnalyticsListItem) => {
+    if (!organizationId) {
+      setToastMessage("Organization context is missing.");
+      setShowToast(true);
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Remove ${judge.judge_name} from the organization?\n\nThis will remove their access to judge evaluations in this organization.`
+      )
+    ) {
+      return;
+    }
+
+    const accessToken = getAccessToken();
+    setRemovingJudgeId(judge.judge_id);
+    try {
+      await removeJudgeFromOrganization(accessToken, organizationId, judge.judge_id);
+      setJudgeItems((prev) => prev.filter((item) => item.judge_id !== judge.judge_id));
+      if (selectedJudgeId === judge.judge_id) {
+        setSelectedJudgeId(null);
+        setSelectedJudgeDetail(null);
+      }
+      setToastMessage(`${judge.judge_name} was removed from the organization.`);
+      setShowToast(true);
+    } catch (error) {
+      setToastMessage(
+        error instanceof Error ? error.message : "Judge could not be removed."
+      );
+      setShowToast(true);
+    } finally {
+      setRemovingJudgeId(null);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -184,6 +223,7 @@ export const Judges: React.FC = () => {
         if (cancelled) {
           return;
         }
+        setOrganizationId(response.organization_id);
         setJudgeItems(response.judges);
         if (response.judges.length > 0) {
           await loadJudgeDetail(response.judges[0].judge_id);
@@ -248,10 +288,17 @@ export const Judges: React.FC = () => {
           ) : (
             <div className="space-y-3">
               {judgeItems.map((item) => (
-                <button
+                <div
                   key={item.judge_id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => void loadJudgeDetail(item.judge_id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      void loadJudgeDetail(item.judge_id);
+                    }
+                  }}
                   className={`w-full rounded-xl border px-4 py-3 text-left transition-all ${
                     selectedJudgeId === item.judge_id
                       ? "border-primary bg-primary/5 shadow-sm"
@@ -276,11 +323,26 @@ export const Judges: React.FC = () => {
                     <Badge variant="secondary">
                       R {formatRate(item.summary.right_pick_rate)}
                     </Badge>
-                    <Badge variant="outline">
-                      Bias {formatScore(item.summary.side_bias_score)}
-                    </Badge>
-                  </div>
-                </button>
+                      <Badge variant="outline">
+                        Bias {formatScore(item.summary.side_bias_score)}
+                      </Badge>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-3 text-xs"
+                        disabled={removingJudgeId === item.judge_id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void handleRemoveJudge(item);
+                        }}
+                      >
+                        {removingJudgeId === item.judge_id
+                          ? "Removing..."
+                          : "Remove from org"}
+                      </Button>
+                    </div>
+                </div>
               ))}
             </div>
           )}

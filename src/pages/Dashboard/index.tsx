@@ -32,9 +32,8 @@ import {
   type ExperimentImportRequest,
 } from "../../lib/authApi";
 import {
-  downloadExperimentImportJSONTemplate,
-  parseExperimentImportJSON,
-  type ParsedImportExperimentJSON,
+  downloadExperimentImportCSVTemplate,
+  parseExperimentImportCSV,
 } from "../../utils/csvParser";
 
 type SelectedModelEntry = {
@@ -45,6 +44,19 @@ type SelectedModelEntry = {
 type SelectedModelView = ModelPoolItem & {
   selectionId: string;
   displayName: string;
+};
+
+type ImportQuestionRow = {
+  text: string;
+  category: string;
+};
+
+type ImportModelColumn = {
+  name: string;
+};
+
+type ImportTableCell = {
+  text: string;
 };
 
 export const Dashboard: React.FC = () => {
@@ -64,12 +76,22 @@ export const Dashboard: React.FC = () => {
   const [alertMessage, setAlertMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isImportingExperiment, setIsImportingExperiment] = useState(false);
-  const [importJsonFileName, setImportJsonFileName] = useState("");
-  const [importJsonText, setImportJsonText] = useState("");
-  const [parsedImportJson, setParsedImportJson] = useState<ParsedImportExperimentJSON | null>(
-    null
-  );
-
+  const [importExperimentTitle, setImportExperimentTitle] = useState("");
+  const [importInputPoolName, setImportInputPoolName] = useState("");
+  const [importDescription, setImportDescription] = useState("");
+  const [importInputPoolDescription, setImportInputPoolDescription] = useState("");
+  const [importEvaluationCriteria, setImportEvaluationCriteria] = useState("");
+  const [importQuestions, setImportQuestions] = useState<ImportQuestionRow[]>([
+    { text: "", category: "" },
+  ]);
+  const [importModels, setImportModels] = useState<ImportModelColumn[]>([
+    { name: "" },
+    { name: "" },
+  ]);
+  const [importResponseGrid, setImportResponseGrid] = useState<ImportTableCell[][]>([
+    [{ text: "" }, { text: "" }],
+  ]);
+  const [importCsvFileName, setImportCsvFileName] = useState("");
   const handleAddModelEntry = (modelId: string) => {
     const selectionId =
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -244,122 +266,211 @@ export const Dashboard: React.FC = () => {
     }));
   };
 
-  const resetImportState = () => {
-    setImportJsonFileName("");
-    setImportJsonText("");
-    setParsedImportJson(null);
+  const resetImportGrid = () => {
+    setImportExperimentTitle("");
+    setImportInputPoolName("");
+    setImportDescription("");
+    setImportInputPoolDescription("");
+    setImportEvaluationCriteria("");
+    setImportQuestions([{ text: "", category: "" }]);
+    setImportModels([{ name: "" }, { name: "" }]);
+    setImportResponseGrid([[{ text: "" }, { text: "" }]]);
+    setImportCsvFileName("");
   };
 
-  const validateParsedImportJson = (parsed: ParsedImportExperimentJSON) => {
-    const errors: string[] = [];
+  const syncImportResponseGrid = (
+    nextQuestions: ImportQuestionRow[],
+    nextModels: ImportModelColumn[],
+    previousGrid: ImportTableCell[][]
+  ) => {
+    const nextGrid = nextQuestions.map((_, rowIndex) =>
+      nextModels.map((_, colIndex) => ({
+        text: previousGrid[rowIndex]?.[colIndex]?.text ?? "",
+      }))
+    );
+    setImportResponseGrid(nextGrid);
+  };
 
-    if (!parsed.name.trim()) {
+  const handleImportQuestionChange = (index: number, value: string) => {
+    setImportQuestions((prev) => {
+      const next = prev.map((row) => ({ ...row }));
+      next[index] = { ...next[index], text: value };
+      return next;
+    });
+  };
+
+  const handleImportQuestionCategoryChange = (index: number, value: string) => {
+    setImportQuestions((prev) => {
+      const next = prev.map((row) => ({ ...row }));
+      next[index] = { ...next[index], category: value };
+      return next;
+    });
+  };
+
+  const handleAddImportQuestion = () => {
+    setImportQuestions((prev) => {
+      const next = [...prev, { text: "", category: "" }];
+      syncImportResponseGrid(next, importModels, importResponseGrid);
+      return next;
+    });
+  };
+
+  const handleRemoveImportQuestion = (index: number) => {
+    if (importQuestions.length <= 1) {
+      return;
+    }
+    setImportQuestions((prev) => {
+      const next = prev.filter((_, itemIndex) => itemIndex !== index);
+      const nextGrid = importResponseGrid.filter((_, itemIndex) => itemIndex !== index);
+      setImportResponseGrid(nextGrid);
+      return next;
+    });
+  };
+
+  const handleImportModelChange = (index: number, value: string) => {
+    setImportModels((prev) => {
+      const next = prev.map((row) => ({ ...row }));
+      next[index] = { ...next[index], name: value };
+      return next;
+    });
+  };
+
+  const handleAddImportModel = () => {
+    setImportModels((prev) => {
+      const next = [...prev, { name: "" }];
+      syncImportResponseGrid(importQuestions, next, importResponseGrid);
+      return next;
+    });
+  };
+
+  const handleRemoveImportModel = (index: number) => {
+    if (importModels.length <= 2) {
+      return;
+    }
+    setImportModels((prev) => {
+      const next = prev.filter((_, itemIndex) => itemIndex !== index);
+      const nextGrid = importResponseGrid.map((row) =>
+        row.filter((_, itemIndex) => itemIndex !== index)
+      );
+      setImportResponseGrid(nextGrid);
+      return next;
+    });
+  };
+
+  const handleImportResponseChange = (rowIndex: number, colIndex: number, value: string) => {
+    setImportResponseGrid((prev) =>
+      prev.map((row, currentRowIndex) =>
+        currentRowIndex !== rowIndex
+          ? row
+          : row.map((cell, currentColIndex) =>
+              currentColIndex !== colIndex ? cell : { text: value }
+            )
+      )
+    );
+  };
+
+  const resetImportState = () => {
+    resetImportGrid();
+  };
+
+  const validateImportSpreadsheet = () => {
+    const errors: string[] = [];
+    const questionRows = importQuestions.filter((question) => question.text.trim());
+    const modelRows = importModels.filter((model) => model.name.trim());
+
+    if (!importExperimentTitle.trim()) {
       errors.push("Missing experiment name.");
     }
-    if (!parsed.input_pool_name.trim()) {
+    if (!importInputPoolName.trim()) {
       errors.push("Missing input pool name.");
     }
-    if (parsed.evaluation_questions.length === 0) {
-      errors.push("Add at least one evaluation question.");
-    }
-    if (parsed.questions.length === 0) {
+    if (questionRows.length === 0) {
       errors.push("Add at least one question.");
     }
-    if (parsed.models.length < 2) {
+    if (modelRows.length < 2) {
       errors.push("Add at least two models.");
     }
-    if (parsed.responses.length === 0) {
-      errors.push("Add response rows for every model/question pair.");
+    if (!importEvaluationCriteria.trim()) {
+      errors.push("Missing evaluation criteria.");
     }
 
-    const modelNames = parsed.models.map((model) => model.name.trim());
-    const uniqueModelNames = new Set(modelNames);
-    if (uniqueModelNames.size !== modelNames.length) {
-      errors.push("Model names must be unique.");
-    }
+    if (questionRows.length > 0 && modelRows.length > 0) {
+      const expectedResponseCount = questionRows.length * modelRows.length;
+      const actualResponseCount = questionRows.flatMap((_, rowIndex) =>
+        modelRows.map((_, colIndex) => importResponseGrid[rowIndex]?.[colIndex]?.text.trim() || "")
+      ).length;
 
-    const evaluationQuestionTexts = parsed.evaluation_questions.map((item) =>
-      item.evaluation_question.trim()
-    );
-    const uniqueEvaluationQuestionTexts = new Set(evaluationQuestionTexts);
-    if (uniqueEvaluationQuestionTexts.size !== evaluationQuestionTexts.length) {
-      errors.push("Evaluation questions must be unique.");
-    }
-
-    parsed.questions.forEach((question, index) => {
-      if (!question.text.trim()) {
-        errors.push(`Question row ${index + 1} is empty.`);
+      if (actualResponseCount !== expectedResponseCount) {
+        errors.push(`Expected ${expectedResponseCount} response cells, but found ${actualResponseCount}.`);
       }
-    });
-
-    const modelIndexByName = new Map(modelNames.map((name, index) => [name, index]));
-    const responseMap = new Map<string, number>();
-
-    parsed.responses.forEach((response, index) => {
-      if (!modelIndexByName.has(response.model_name.trim())) {
-        errors.push(`Unknown model name in response row ${index + 1}: ${response.model_name}`);
-        return;
-      }
-
-      if (
-        !Number.isInteger(response.question_index) ||
-        response.question_index < 0 ||
-        response.question_index >= parsed.questions.length
-      ) {
-        errors.push(
-          `Invalid question_index in response row ${index + 1}: ${response.question_index}`
-        );
-        return;
-      }
-
-      const key = `${response.model_name.trim()}::${response.question_index}`;
-      responseMap.set(key, (responseMap.get(key) || 0) + 1);
-    });
-
-    const expectedResponseCount = parsed.models.length * parsed.questions.length;
-    if (parsed.responses.length !== expectedResponseCount) {
-      errors.push(
-        `Expected ${expectedResponseCount} response rows, but found ${parsed.responses.length}.`
-      );
     }
 
-    const missingPairs: string[] = [];
-    parsed.models.forEach((model) => {
-      parsed.questions.forEach((_, questionIndex) => {
-        const key = `${model.name.trim()}::${questionIndex}`;
-        const count = responseMap.get(key) || 0;
-        if (count === 0) {
-          missingPairs.push(`${model.name.trim()} #${questionIndex + 1}`);
-        }
-        if (count > 1) {
-          errors.push(
-            `Duplicate responses found for ${model.name.trim()} question #${questionIndex + 1}.`
-          );
+    const missingCells: string[] = [];
+    questionRows.forEach((_, rowIndex) => {
+      modelRows.forEach((model, colIndex) => {
+        const value = importResponseGrid[rowIndex]?.[colIndex]?.text.trim() || "";
+        if (!value) {
+          missingCells.push(`${model.name.trim()} / Question ${rowIndex + 1}`);
         }
       });
     });
 
-    if (missingPairs.length > 0) {
-      errors.push(`Missing responses for: ${missingPairs.slice(0, 5).join(", ")}${missingPairs.length > 5 ? "..." : ""}`);
+    if (missingCells.length > 0) {
+      errors.push(
+        `Missing responses for: ${missingCells.slice(0, 5).join(", ")}${missingCells.length > 5 ? "..." : ""}`
+      );
     }
 
+    const uniqueModelNames = new Set(modelRows.map((model) => model.name.trim()));
+    if (uniqueModelNames.size !== modelRows.length) {
+      errors.push("Model names must be unique.");
+    }
+
+    if (questionRows.some((question) => !question.text.trim())) {
+      errors.push("Question rows cannot be empty.");
+    }
     return errors;
   };
 
   const handleImportCsvFile = async (file: File) => {
     try {
-      const text = await file.text();
-      const parsed = parseExperimentImportJSON(text);
-      setParsedImportJson(parsed);
-      setImportJsonText(text);
-      setImportJsonFileName(file.name);
+      const parsed = await parseExperimentImportCSV(file);
+      setImportCsvFileName(file.name);
+      setImportQuestions(
+        parsed.questions.length > 0
+          ? parsed.questions.map((question) => ({
+              text: question.text,
+              category: question.category || "",
+            }))
+          : [{ text: "", category: "" }]
+      );
+      setImportModels(
+        parsed.models.length >= 2
+          ? parsed.models.map((model) => ({ name: model.name }))
+          : [{ name: "" }, { name: "" }]
+      );
+      const nextQuestions =
+        parsed.questions.length > 0 ? parsed.questions : [{ text: "", category: "" }];
+      const nextModels =
+        parsed.models.length >= 2 ? parsed.models : [{ name: "" }, { name: "" }];
+      setImportResponseGrid(
+        nextQuestions.map((_, rowIndex) =>
+          nextModels.map((model, colIndex) => ({
+            text:
+              parsed.responses.find(
+                (response) =>
+                  response.model_name.trim() === model.name.trim() &&
+                  response.question_index === rowIndex
+              )?.text || "",
+          }))
+        )
+      );
       setAlertMessage("");
       setShowAlertToast(false);
     } catch (error) {
-      setParsedImportJson(null);
-      setImportJsonFileName("");
+      setImportCsvFileName("");
       setAlertMessage(
-        error instanceof Error ? error.message : "Error parsing JSON file. Please check the format."
+        error instanceof Error ? error.message : "Error parsing CSV file. Please check the format."
       );
       setShowAlertToast(true);
     }
@@ -370,8 +481,8 @@ export const Dashboard: React.FC = () => {
     if (!file) {
       return;
     }
-    if (!file.name.toLowerCase().endsWith(".json")) {
-      setAlertMessage("Please upload a .json file.");
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      setAlertMessage("Please upload a .csv file.");
       setShowAlertToast(true);
       return;
     }
@@ -379,7 +490,7 @@ export const Dashboard: React.FC = () => {
   };
 
   const handleImportCsvDownloadTemplate = () => {
-    downloadExperimentImportJSONTemplate();
+    downloadExperimentImportCSVTemplate();
   };
 
   const handleImportExperiment = async () => {
@@ -389,42 +500,43 @@ export const Dashboard: React.FC = () => {
       return;
     }
 
-    if (!parsedImportJson) {
-      setAlertMessage("Please upload a JSON file first.");
-      setShowAlertToast(true);
-      return;
-    }
-
-    const validationErrors = validateParsedImportJson(parsedImportJson);
+    const validationErrors = validateImportSpreadsheet();
     if (validationErrors.length > 0) {
       setAlertMessage(validationErrors[0]);
       setShowAlertToast(true);
       return;
     }
 
+    const questionRows = importQuestions.filter((question) => question.text.trim());
+    const modelRows = importModels.filter((model) => model.name.trim());
     const payload: ExperimentImportRequest = {
-      name: parsedImportJson.name.trim(),
-      input_pool_name: parsedImportJson.input_pool_name.trim(),
-      description: parsedImportJson.description?.trim() || undefined,
-      input_pool_description: parsedImportJson.input_pool_description?.trim() || undefined,
-      evaluation_criteria: parsedImportJson.evaluation_criteria?.trim() || undefined,
+      name: importExperimentTitle.trim(),
+      input_pool_name: importInputPoolName.trim(),
+      description: importDescription.trim() || undefined,
+      input_pool_description: importInputPoolDescription.trim() || undefined,
+      evaluation_criteria: importEvaluationCriteria.trim() || undefined,
       organization_id: user.organizationId,
-      evaluation_questions: parsedImportJson.evaluation_questions.map((item) => ({
-        evaluation_question: item.evaluation_question.trim(),
-      })),
-      questions: parsedImportJson.questions.map((question) => ({
+      evaluation_questions: [
+        {
+          evaluation_question:
+            importEvaluationCriteria.trim() || "Which response is more accurate?",
+        },
+      ],
+      questions: questionRows.map((question) => ({
         text: question.text.trim(),
-        category: question.category?.trim() || undefined,
-        type: question.type || "open",
+        category: question.category.trim() || undefined,
+        type: "open",
       })),
-      models: parsedImportJson.models.map((model) => ({
+      models: modelRows.map((model) => ({
         name: model.name.trim(),
       })),
-      responses: parsedImportJson.responses.map((response) => ({
-        model_name: response.model_name.trim(),
-        question_index: response.question_index,
-        text: response.text.trim(),
-      })),
+      responses: questionRows.flatMap((_, rowIndex) =>
+        modelRows.map((model, colIndex) => ({
+          model_name: model.name.trim(),
+          question_index: rowIndex,
+          text: importResponseGrid[rowIndex]?.[colIndex]?.text.trim() || "",
+        }))
+      ),
     };
 
     setIsImportingExperiment(true);
@@ -799,60 +911,53 @@ export const Dashboard: React.FC = () => {
         </form>
       </Card>
 
-      <Card title="Import Experiment From JSON">
+      <Card title="Import Experiment From CSV">
         <div className="space-y-5">
           <Alert>
             <Info className="h-4 w-4" />
             <AlertDescription>
-              <strong>JSON import:</strong> Paste or upload a single structured JSON object that includes
-              the experiment metadata, questions, models, and responses. The import will
-              create a completed experiment directly, without running model generation.
+              <strong>CSV import:</strong> Fill the form like a small spreadsheet. You can paste or upload a CSV file, and the import will create a completed experiment directly, without running model generation.
             </AlertDescription>
           </Alert>
 
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-            <div className="min-w-0 space-y-4">
+          <div className="space-y-4">
               <div
                 className={cn(
                   "rounded-xl border-2 border-dashed p-5 transition-colors",
-                  importJsonFileName ? "border-primary bg-primary/5" : "border-border bg-muted/10"
+                  importCsvFileName ? "border-primary bg-primary/5" : "border-border bg-muted/10"
                 )}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                }}
+                onDragOver={(event) => event.preventDefault()}
                 onDrop={async (event) => {
                   event.preventDefault();
                   const file = event.dataTransfer.files?.[0];
-                  if (!file) {
-                    return;
-                  }
+                  if (!file) return;
                   await handleImportCsvFile(file);
                 }}
               >
                 <input
                   type="file"
-                  accept=".json,application/json"
+                  accept=".csv,text/csv"
                   className="hidden"
-                  id="import-experiment-json"
+                  id="import-experiment-csv"
                   onChange={handleImportCsvUpload}
                 />
                 <div className="space-y-3 text-center">
                   <div>
                     <p className="text-base font-semibold text-foreground">
-                      Drag and drop your import JSON here
+                      Drag and drop your CSV here
                     </p>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Or choose a file that matches the sample format below.
+                      Or choose a sample CSV and edit the table below.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center justify-center gap-2">
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => document.getElementById("import-experiment-json")?.click()}
+                      onClick={() => document.getElementById("import-experiment-csv")?.click()}
                       disabled={isImportingExperiment}
                     >
-                      Choose JSON
+                      Choose CSV
                     </Button>
                     <Button
                       type="button"
@@ -860,124 +965,183 @@ export const Dashboard: React.FC = () => {
                       onClick={handleImportCsvDownloadTemplate}
                       disabled={isImportingExperiment}
                     >
-                      Download sample JSON
+                      Download sample CSV
                     </Button>
                   </div>
-                  {importJsonFileName && (
+                  {importCsvFileName && (
                     <p className="text-sm text-primary">
-                      Selected file: <strong>{importJsonFileName}</strong>
+                      Selected file: <strong>{importCsvFileName}</strong>
                     </p>
                   )}
+                  <div className="mx-auto mt-2 max-w-3xl overflow-hidden rounded-xl border border-border bg-background">
+                    <img
+                      src="/examle-exp.png"
+                      alt="Example experiment CSV layout"
+                      className="h-auto w-full object-cover"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <Accordion type="single" defaultValue="sample-format">
-                <AccordionItem value="sample-format">
-                  <AccordionTrigger
-                    className="cursor-default pointer-events-none hover:no-underline"
-                  >
-                    JSON format
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <p className="mb-3 text-sm text-muted-foreground">
-                      Use one JSON object with experiment metadata, question arrays, model arrays,
-                      and response arrays.
-                    </p>
-                    <div className="overflow-hidden rounded-xl border border-border bg-muted/20 p-3">
-                      <img
-                        src="/example-exp.png"
-                        alt="Sample experiment JSON format"
-                        className="block w-full rounded-lg border border-border bg-background object-cover"
-                      />
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </div>
-
-            <div className="min-w-0 space-y-4">
-              <div className="rounded-xl border border-border bg-muted/20 p-4">
-                <p className="text-sm font-semibold text-foreground">Parsed summary</p>
-                {parsedImportJson ? (
-                  <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-                    <p>
-                      Experiment: <span className="text-foreground">{parsedImportJson.name}</span>
-                    </p>
-                    <p>
-                      Question pool:{" "}
-                      <span className="text-foreground">{parsedImportJson.input_pool_name}</span>
-                    </p>
-                    <p>
-                      Questions: <span className="text-foreground">{parsedImportJson.questions.length}</span>
-                    </p>
-                    <p>
-                      Models: <span className="text-foreground">{parsedImportJson.models.length}</span>
-                    </p>
-                    <p>
-                      Evaluation questions: <span className="text-foreground">{parsedImportJson.evaluation_questions.length}</span>
-                    </p>
-                    <p>
-                      Responses: <span className="text-foreground">{parsedImportJson.responses.length}</span>
-                    </p>
-                    {parsedImportJson.evaluation_criteria && (
-                      <p>
-                        Criteria: <span className="text-foreground">{parsedImportJson.evaluation_criteria}</span>
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Upload or paste JSON to preview the import payload.
-                  </p>
-                )}
-              </div>
-
-              <div className="rounded-xl border border-border bg-muted/20 p-4">
-                <p className="text-sm font-semibold text-foreground">Rules</p>
-                <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
-                  <li>• `name` and `input_pool_name` are required.</li>
-                  <li>• `questions` must contain at least 1 item.</li>
-                  <li>• `models` must contain at least 2 unique names.</li>
-                  <li>• `responses` must cover every model/question pair exactly once.</li>
-                </ul>
-              </div>
-
-              <div className="rounded-xl border border-border bg-muted/20 p-4">
-                <p className="text-sm font-semibold text-foreground">Paste JSON</p>
-                <Textarea
-                  className="mt-3"
-                  placeholder='{"name":"Mini Blind Test", ...}'
-                  value={importJsonText}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setImportJsonText(value);
-                    if (!value.trim()) {
-                      setParsedImportJson(null);
-                      setImportJsonFileName("");
-                      return;
-                    }
-                    try {
-                      const parsed = parseExperimentImportJSON(value);
-                      setParsedImportJson(parsed);
-                    } catch {
-                      setParsedImportJson(null);
-                    }
-                  }}
-                  rows={10}
+              <div className="grid gap-4 md:grid-cols-2">
+                <Input
+                  label="Experiment Title"
+                  placeholder="Experiment title"
+                  value={importExperimentTitle}
+                  onChange={(e) => setImportExperimentTitle(e.target.value)}
+                  required
                   disabled={isImportingExperiment}
                 />
+                <Input
+                  label="Question Pool Name"
+                  placeholder="Question pool name"
+                  value={importInputPoolName}
+                  onChange={(e) => setImportInputPoolName(e.target.value)}
+                  required
+                  disabled={isImportingExperiment}
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <Textarea
+                  label="Experiment Description"
+                  placeholder="Optional experiment description"
+                  value={importDescription}
+                  onChange={(e) => setImportDescription(e.target.value)}
+                  rows={3}
+                  disabled={isImportingExperiment}
+                />
+                <Textarea
+                  label="Question Pool Description"
+                  placeholder="Optional question pool description"
+                  value={importInputPoolDescription}
+                  onChange={(e) => setImportInputPoolDescription(e.target.value)}
+                  rows={3}
+                  disabled={isImportingExperiment}
+                />
+              </div>
+
+              <Textarea
+                label="Evaluation Criteria"
+                placeholder="How should judges decide?"
+                value={importEvaluationCriteria}
+                onChange={(e) => setImportEvaluationCriteria(e.target.value)}
+                rows={3}
+                required
+                disabled={isImportingExperiment}
+              />
+
+              <div className="rounded-xl border border-border bg-muted/20 p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-semibold text-foreground">Spreadsheet Editor</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Add questions and models with the + buttons, then fill in every response cell.
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={handleAddImportQuestion} disabled={isImportingExperiment}>
+                      + Question
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={handleAddImportModel} disabled={isImportingExperiment}>
+                      + Model
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="max-h-[460px] overflow-auto rounded-lg border border-border bg-background">
+                  <table className="min-w-[1280px] w-full border-collapse text-sm">
+                    <thead className="bg-muted/40">
+                      <tr>
+                        <th className="w-[260px] border-b border-border px-3 py-2 text-left font-semibold text-foreground">
+                          Question
+                        </th>
+                        <th className="w-[150px] border-b border-border px-3 py-2 text-left font-semibold text-foreground">
+                          Category
+                        </th>
+                        {importModels.map((model, modelIndex) => (
+                          <th key={`model-head-${modelIndex}`} className="min-w-[220px] border-b border-border px-3 py-2 text-left font-semibold text-foreground">
+                            <div className="mb-2 flex items-center gap-2">
+                              <Input
+                                placeholder={`Model ${modelIndex + 1}`}
+                                value={model.name}
+                                onChange={(e) => handleImportModelChange(modelIndex, e.target.value)}
+                                disabled={isImportingExperiment}
+                                className="mb-0"
+                              />
+                              {importModels.length > 2 && (
+                                <Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveImportModel(modelIndex)} disabled={isImportingExperiment}>
+                                  Remove
+                                </Button>
+                              )}
+                            </div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importQuestions.map((question, rowIndex) => (
+                        <tr key={`row-${rowIndex}`} className="align-top">
+                          <td className="border-b border-border px-3 py-2">
+                            <Textarea
+                              value={question.text}
+                              onChange={(e) => handleImportQuestionChange(rowIndex, e.target.value)}
+                              rows={3}
+                              placeholder={`Question ${rowIndex + 1}`}
+                              disabled={isImportingExperiment}
+                              className="mb-0"
+                            />
+                          </td>
+                          <td className="border-b border-border px-3 py-2">
+                            <Input
+                              value={question.category}
+                              onChange={(e) => handleImportQuestionCategoryChange(rowIndex, e.target.value)}
+                              placeholder="Optional"
+                              disabled={isImportingExperiment}
+                              className="mb-0"
+                            />
+                          </td>
+                          {importModels.map((model, colIndex) => (
+                            <td key={`cell-${rowIndex}-${colIndex}`} className="border-b border-border px-3 py-2">
+                              <Textarea
+                                value={importResponseGrid[rowIndex]?.[colIndex]?.text ?? ""}
+                                onChange={(e) => handleImportResponseChange(rowIndex, colIndex, e.target.value)}
+                                rows={3}
+                                placeholder={`${model.name || `Model ${colIndex + 1}`} answer`}
+                                disabled={isImportingExperiment}
+                                className="mb-0"
+                              />
+                            </td>
+                          ))}
+                          <td className="border-b border-border px-3 py-2">
+                            {importModels.length > 0 && (
+                              <Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveImportQuestion(rowIndex)} disabled={isImportingExperiment || importQuestions.length <= 1}>
+                                Remove
+                              </Button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               <Button
                 type="button"
                 className="w-full"
                 size="lg"
-                disabled={!parsedImportJson || isImportingExperiment}
+                disabled={isImportingExperiment || !importExperimentTitle.trim() || !importInputPoolName.trim() || importQuestions.length === 0 || importModels.length < 2}
                 onClick={() => void handleImportExperiment()}
               >
                 {isImportingExperiment ? "Importing Experiment..." : "Import Experiment"}
               </Button>
-            </div>
+              <div className="rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-sm font-semibold text-foreground">CSV Notes</p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  The sample CSV only fills the spreadsheet area. Experiment title, pool name, descriptions, and evaluation criteria should still be entered above.
+                </p>
+              </div>
           </div>
         </div>
       </Card>

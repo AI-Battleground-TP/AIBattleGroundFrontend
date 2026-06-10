@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Button, Card, Input, Textarea, Toast } from "../../components";
 import { Badge } from "../../components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -21,6 +22,7 @@ import {
   deleteExperimentPreference,
   archiveExperiment,
   attachModelToExperiment,
+  exportExperiment,
   getEvaluationQuestionsByExperiment,
   getExperimentModelAppearanceSummary,
   getExperimentModelPreferenceSummary,
@@ -36,6 +38,7 @@ import {
   getTestsByExperiment,
   removeModelFromExperiment,
   retryExperimentModelResponses,
+  stopExperiment,
   type BackendEvaluationQuestion,
   type BackendExperiment,
   type BackendExperimentModelAppearanceSummary,
@@ -176,6 +179,8 @@ const createEmptyTokenUsageSummary = (
 ): BackendExperimentModelTokenUsageSummary => ({
   experiment_id: experimentId,
   total_responses: 0,
+  total_input_tokens: 0,
+  total_output_tokens: 0,
   prompt_tokens: 0,
   completion_tokens: 0,
   total_tokens: 0,
@@ -244,7 +249,7 @@ const formatEloRating = (value: number | null | undefined) =>
 const formatInteger = (value: number) => new Intl.NumberFormat().format(value);
 
 const formatUsd = (value: number | null | undefined) =>
-  value === null || value === undefined ? "unknown cost" : `$${value.toFixed(2)}`;
+  value === null || value === undefined ? "? cost" : `$${value.toFixed(2)}`;
 
 const normalizeExperimentStatus = (status: string) => {
   const lowered = status.toLowerCase();
@@ -472,6 +477,8 @@ export const Results: React.FC = () => {
   const [hasLoadedArchivedExperiments, setHasLoadedArchivedExperiments] = useState(false);
   const [removingModelKey, setRemovingModelKey] = useState<string | null>(null);
   const [archivingExperimentId, setArchivingExperimentId] = useState<string | null>(null);
+  const [stoppingExperimentId, setStoppingExperimentId] = useState<string | null>(null);
+  const [exportingExperimentId, setExportingExperimentId] = useState<string | null>(null);
   const [addingModelExperimentId, setAddingModelExperimentId] = useState<string | null>(null);
   const [selectedNewModelByExperiment, setSelectedNewModelByExperiment] = useState<
     Record<string, string>
@@ -1325,6 +1332,60 @@ export const Results: React.FC = () => {
     }
   };
 
+  const handleStopExperiment = async (experimentId: string, experimentName: string) => {
+    if (
+      !window.confirm(
+        `Cancel the running experiment "${experimentName}"?\n\nGenerated responses will be kept, and unanswered pairs will be marked as failed for retry.`
+      )
+    ) {
+      return;
+    }
+
+    const accessToken = getAccessToken();
+    setStoppingExperimentId(experimentId);
+    try {
+      await stopExperiment(accessToken, experimentId);
+      await loadOverview();
+      if (expandedExpId === experimentId) {
+        await loadExperimentDetail(experimentId);
+      }
+      setSuccessMessage(`"${experimentName}" was cancelled.`);
+      setShowSuccessToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Experiment could not be cancelled."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setStoppingExperimentId(null);
+    }
+  };
+
+  const handleExportExperiment = async (experimentId: string, experimentName: string) => {
+    const accessToken = getAccessToken();
+    setExportingExperimentId(experimentId);
+    try {
+      const { blob, filename } = await exportExperiment(accessToken, experimentId);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+      setSuccessMessage(`"${experimentName}" export downloaded.`);
+      setShowSuccessToast(true);
+    } catch (error) {
+      setAlertMessage(
+        error instanceof Error ? error.message : "Experiment could not be exported."
+      );
+      setShowAlertToast(true);
+    } finally {
+      setExportingExperimentId(null);
+    }
+  };
+
   const handleOpenDiagnostics = (experimentId: string) => {
     setExpandedExpId(experimentId);
     handleSelectResultTab(experimentId, "diagnostics");
@@ -1685,6 +1746,34 @@ export const Results: React.FC = () => {
                                 : "Archive"}
                             </Button>
                           )}
+                          {normalizedExperimentStatus === "IN_PROGRESS" && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-3 text-xs"
+                              disabled={stoppingExperimentId === experiment.id}
+                              onClick={() =>
+                                void handleStopExperiment(experiment.id, experiment.name)
+                              }
+                            >
+                              {stoppingExperimentId === experiment.id ? "Cancelling..." : "Cancel"}
+                            </Button>
+                          )}
+                          {normalizedExperimentStatus === "COMPLETED" && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-3 text-xs"
+                              disabled={exportingExperimentId === experiment.id}
+                              onClick={() =>
+                                void handleExportExperiment(experiment.id, experiment.name)
+                              }
+                            >
+                              {exportingExperimentId === experiment.id ? "Exporting..." : "Export"}
+                            </Button>
+                          )}
                           <span
                             className={`rounded-full px-3 py-1 text-xs font-semibold ${
                               normalizedExperimentStatus === "COMPLETED"
@@ -1734,33 +1823,37 @@ export const Results: React.FC = () => {
                                       <Badge variant="secondary">
                                         Failed ({failedState.totalFailCount})
                                       </Badge>
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-6 px-2 text-xs"
-                                        disabled={
-                                          isRetrying || failedState.retryStatus === "in_progress"
-                                        }
-                                        title={
-                                          failedState.retryStatus === "in_progress"
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-6 px-2 text-xs"
+                                            disabled={
+                                              isRetrying || failedState.retryStatus === "in_progress"
+                                            }
+                                            onClick={() =>
+                                              void handleRetryModel(
+                                                experiment.id,
+                                                row.modelId,
+                                                row.modelName
+                                              )
+                                            }
+                                          >
+                                            {isRetrying || failedState.retryStatus === "in_progress"
+                                              ? "Running..."
+                                              : "Run"}
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                          {failedState.retryStatus === "in_progress"
                                             ? "Retry is already running for this model."
                                             : `Retry ${failedState.totalFailCount} failed response${
                                                 failedState.totalFailCount !== 1 ? "s" : ""
-                                              }`
-                                        }
-                                        onClick={() =>
-                                          void handleRetryModel(
-                                            experiment.id,
-                                            row.modelId,
-                                            row.modelName
-                                          )
-                                        }
-                                      >
-                                        {isRetrying || failedState.retryStatus === "in_progress"
-                                          ? "Running..."
-                                          : "Run"}
-                                      </Button>
+                                              }`}
+                                        </TooltipContent>
+                                      </Tooltip>
                                     </>
                                   )}
                                   {failedState && !canRetryFailedModels && (
@@ -1887,13 +1980,6 @@ export const Results: React.FC = () => {
                           </div>
                           <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
                             <p className="text-xs text-muted-foreground">Token Usage</p>
-                            <p className="text-sm font-medium text-foreground">
-                              {detail?.tokenUsage
-                                ? `${formatInteger(detail.tokenUsage.total_tokens)} total tokens · ${formatUsd(
-                                    detail.tokenUsage.total_cost_usd
-                                  )}`
-                                : "Loading token usage..."}
-                            </p>
                             {detail?.tokenUsage && detail.tokenUsage.model_breakdown.length > 0 && (
                               <div className="mt-2 space-y-1">
                                 {detail.tokenUsage.model_breakdown.map((row) => (
@@ -1901,10 +1987,31 @@ export const Results: React.FC = () => {
                                     key={`${experiment.id}-tokens-${row.model_id}`}
                                     className="flex items-center justify-between gap-3 text-xs text-muted-foreground"
                                   >
-                                    <span className="truncate">{row.model_name}</span>
-                                    <span className="shrink-0 font-medium text-foreground">
-                                      {formatInteger(row.total_tokens)} · {formatUsd(row.total_cost_usd)}
+                                    <span className="group relative min-w-0 max-w-[11rem]">
+                                      <span className="block truncate">
+                                        {row.model_name}
+                                      </span>
+                                      <span className="pointer-events-none absolute left-0 top-full z-50 mt-2 hidden max-w-sm rounded-md border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md group-hover:block">
+                                        {row.model_name}
+                                      </span>
                                     </span>
+                                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 font-medium text-foreground">
+                                      <span>
+                                        {formatInteger(row.total_tokens)} · {formatUsd(row.total_cost_usd)}
+                                      </span>
+                                      <span className="text-xs text-muted-foreground">
+                                        In{" "}
+                                        {formatInteger(
+                                          row.total_input_tokens ?? row.prompt_tokens
+                                        )}
+                                      </span>
+                                      <span className="text-xs text-muted-foreground">
+                                        Out{" "}
+                                        {formatInteger(
+                                          row.total_output_tokens ?? row.completion_tokens
+                                        )}
+                                      </span>
+                                    </div>
                                   </div>
                                 ))}
                               </div>
@@ -2445,7 +2552,7 @@ export const Results: React.FC = () => {
                                                 </div>
                                               )}
 
-                                              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                                              <div className="mt-4 space-y-3">
                                                 {pairGroups.length === 0 ? (
                                                   <div className="rounded-xl border border-border/70 bg-background/80 p-4 text-sm text-muted-foreground">
                                                     No blind tests are grouped under this question yet.
@@ -2479,7 +2586,7 @@ export const Results: React.FC = () => {
                                                           </div>
                                                         </div>
 
-                                                        <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                                        <div className="mt-4 space-y-3">
                                                           <div className="rounded-lg bg-muted/30 px-3 py-3">
                                                             <div className="mb-2 flex items-center justify-between gap-2">
                                                               <p className="text-sm font-medium text-foreground">

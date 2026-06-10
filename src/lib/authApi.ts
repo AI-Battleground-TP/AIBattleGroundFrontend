@@ -218,6 +218,8 @@ export interface BackendModelTokenUsageRow {
   model_id: string;
   model_name: string;
   response_count: number;
+  total_input_tokens?: number;
+  total_output_tokens?: number;
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
@@ -229,6 +231,8 @@ export interface BackendModelTokenUsageRow {
 export interface BackendExperimentModelTokenUsageSummary {
   experiment_id: string;
   total_responses: number;
+  total_input_tokens?: number;
+  total_output_tokens?: number;
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
@@ -780,6 +784,36 @@ export const archiveExperiment = (accessToken: string, experimentId: string) =>
       Authorization: `Bearer ${accessToken}`,
     },
   });
+
+export const stopExperiment = (accessToken: string, experimentId: string) =>
+  requestJson<BackendExperiment>(`/experiments/${experimentId}/stop`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const exportExperiment = async (accessToken: string, experimentId: string) => {
+  const response = await fetch(`${API_BASE_URL}/experiments/${experimentId}/export`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await resolveErrorMessage(response));
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+
+  return {
+    blob,
+    filename: filenameMatch?.[1] || `experiment-${experimentId}.zip`,
+  };
+};
 
 export const attachModelToExperiment = (
   accessToken: string,

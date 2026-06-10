@@ -120,6 +120,7 @@ export const UserProfilePage: React.FC = () => {
               <ReadOnlyField label="Last Name" value={profile.surname} />
               <ReadOnlyField label="Email" value={profile.email} />
               <ReadOnlyField label="Phone" value={profile.phone || "-"} />
+              <ReadOnlyField label="Organization ID" value={profile.organization_id} />
               <ReadOnlyField
                 label="Organization"
                 value={user?.organizationName || profile.organization_id}

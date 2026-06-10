@@ -13,6 +13,7 @@ import {
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Button as ShadcnButton } from "./ui/button";
+import { Input } from "./ui/input";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +29,7 @@ import {
   SelectValue,
 } from "./ui/select";
 import { User, MoreVertical } from "lucide-react";
+import { createOrganization } from "../lib/authApi";
 
 export const Navbar: React.FC = () => {
   const location = useLocation();
@@ -37,6 +39,7 @@ export const Navbar: React.FC = () => {
     organizations,
     logout,
     switchRole,
+    refreshOrganizations,
     switchOrganization,
     isSwitchingOrganization,
   } = useAuth();
@@ -46,6 +49,8 @@ export const Navbar: React.FC = () => {
   const [isSwitchDialogOpen, setIsSwitchDialogOpen] = useState(false);
   const [pendingOrganizationId, setPendingOrganizationId] = useState("");
   const [switchOrgError, setSwitchOrgError] = useState("");
+  const [newOrganizationName, setNewOrganizationName] = useState("");
+  const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -94,6 +99,35 @@ export const Navbar: React.FC = () => {
           ? error.message
           : "Organization degistirme basarisiz."
       );
+    }
+  };
+
+  const handleCreateOrganization = async () => {
+    const organizationName = newOrganizationName.trim();
+    if (!organizationName) {
+      setSwitchOrgError("Organization name is required.");
+      return;
+    }
+
+    const accessToken = localStorage.getItem("bt_access_token");
+    if (!accessToken) {
+      setSwitchOrgError("Missing access token.");
+      return;
+    }
+
+    setIsCreatingOrganization(true);
+    setSwitchOrgError("");
+    try {
+      const organization = await createOrganization(accessToken, organizationName);
+      await refreshOrganizations();
+      setPendingOrganizationId(organization.id);
+      setNewOrganizationName("");
+    } catch (error) {
+      setSwitchOrgError(
+        error instanceof Error ? error.message : "Organization could not be created."
+      );
+    } finally {
+      setIsCreatingOrganization(false);
     }
   };
 
@@ -234,14 +268,16 @@ export const Navbar: React.FC = () => {
                 )}
 
                 <div className="flex min-w-0 max-w-[min(100%,20rem)] sm:max-w-xs items-center gap-2">
-                  <span
-                    className="text-sm text-foreground truncate"
-                    title={
-                      currentOrganizationLabel || "No organization selected"
-                    }
-                  >
-                    {currentOrganizationLabel || "—"}
-                  </span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="max-w-full truncate text-sm text-foreground">
+                        {currentOrganizationLabel || "—"}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {currentOrganizationLabel || "No organization selected"}
+                    </TooltipContent>
+                  </Tooltip>
                   <ShadcnButton
                     variant="outline"
                     size="sm"
@@ -344,6 +380,35 @@ export const Navbar: React.FC = () => {
             {switchOrgError && (
               <p className="text-sm text-destructive">{switchOrgError}</p>
             )}
+
+            <div className="border-t border-border pt-3">
+              <p className="mb-2 text-sm font-medium text-foreground">
+                Create Organization
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  value={newOrganizationName}
+                  onChange={(event) => {
+                    setNewOrganizationName(event.target.value);
+                    setSwitchOrgError("");
+                  }}
+                  placeholder="New organization name"
+                  disabled={isCreatingOrganization || isSwitchingOrganization}
+                />
+                <ShadcnButton
+                  type="button"
+                  variant="outline"
+                  onClick={handleCreateOrganization}
+                  disabled={
+                    isCreatingOrganization ||
+                    isSwitchingOrganization ||
+                    !newOrganizationName.trim()
+                  }
+                >
+                  {isCreatingOrganization ? "Creating..." : "Create"}
+                </ShadcnButton>
+              </div>
+            </div>
           </div>
 
           <DialogFooter>

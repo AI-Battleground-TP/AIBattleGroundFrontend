@@ -29,6 +29,7 @@ import {
   getExperimentModelRatings,
   getExperimentModelTokenUsage,
   getExperimentEvaluationQuestionRatings,
+  getExperimentCategoryRatings,
   getArchivedExperiments,
   getExperiments,
   getInputPools,
@@ -48,6 +49,7 @@ import {
   type BackendExperimentModelPreferenceSummary,
   type BackendExperimentModelTokenUsageSummary,
   type BackendEvaluationQuestionRatingSummary,
+  type BackendCategoryRatingSummary,
   type BackendInputPool,
   type BackendModel,
   type BackendPreference,
@@ -60,6 +62,7 @@ type ExperimentResultDetail = {
   summary: BackendExperimentModelPreferenceSummary;
   ratings: BackendExperimentModelRatingsSummary | null;
   questionRatings: BackendEvaluationQuestionRatingSummary[] | null;
+  categoryRatings: BackendCategoryRatingSummary[] | null;
   appearanceByModel: Record<string, BackendExperimentModelAppearanceSummary>;
   tokenUsage: BackendExperimentModelTokenUsageSummary | null;
   tests: BackendTest[];
@@ -71,7 +74,7 @@ type ExperimentResultDetail = {
 
 type SortOption = "newest" | "most-preferences";
 type StatusFilter = "ALL" | "IN_PROGRESS" | "COMPLETED";
-type ResultTab = "overview" | "pairwise" | "questions" | "judge-questions" | "diagnostics";
+type ResultTab = "overview" | "pairwise" | "questions" | "judge-questions" | "categories" | "diagnostics";
 
 type QuestionGrouping = {
   questionId: string;
@@ -938,6 +941,7 @@ export const Results: React.FC = () => {
               summary,
               ratings,
               questionRatings: null,
+              categoryRatings: null,
               appearanceByModel,
               tokenUsage,
               tests,
@@ -953,6 +957,7 @@ export const Results: React.FC = () => {
               summary: createEmptySummary(experiment.id),
               ratings: createEmptyRatingsSummary(experiment.id),
               questionRatings: null,
+              categoryRatings: null,
               appearanceByModel: {},
               tokenUsage: createEmptyTokenUsageSummary(experiment.id),
               tests: [],
@@ -1040,7 +1045,8 @@ export const Results: React.FC = () => {
         (Object.keys(existing.questionMap).length > 0 &&
           Object.keys(existing.preferencesByTest).length > 0)) &&
       missingFailedQuestionIds.length === 0 &&
-      existing.questionRatings !== null;
+      existing.questionRatings !== null &&
+      existing.categoryRatings !== null;
 
     if (hasDeepDetail) {
       return;
@@ -1086,6 +1092,24 @@ export const Results: React.FC = () => {
         } catch (e) {
           console.error("Error fetching questionRatings:", e);
           questionRatings = null;
+        }
+      }
+
+      let categoryRatings = baseDetail?.categoryRatings;
+      if (!categoryRatings) {
+        try {
+          const rawCatRatings: any = await getExperimentCategoryRatings(accessToken, experimentId);
+          console.log("Fetched raw categoryRatings:", rawCatRatings);
+
+          if (rawCatRatings && typeof rawCatRatings === "object" && !Array.isArray(rawCatRatings)) {
+            const arrayValue = Object.values(rawCatRatings).find((v) => Array.isArray(v));
+            categoryRatings = arrayValue || rawCatRatings;
+          } else {
+            categoryRatings = rawCatRatings || [];
+          }
+        } catch (e) {
+          console.error("Error fetching categoryRatings:", e);
+          categoryRatings = null;
         }
       }
       const tokenUsage =
@@ -1166,6 +1190,7 @@ export const Results: React.FC = () => {
           summary,
           ratings,
           questionRatings,
+          categoryRatings,
           appearanceByModel,
           tokenUsage,
           tests,
@@ -2086,6 +2111,7 @@ export const Results: React.FC = () => {
                               [
                                 ["overview", "Overview"],
                                 ["judge-questions", "Judge Questions"],
+                                ["categories", "Categories"],
                                 ["pairwise", "Pairwise"],
                                 ["questions", "Questions"],
                                 ["diagnostics", "Diagnostics"],
@@ -2279,6 +2305,84 @@ export const Results: React.FC = () => {
                                           {(!ratingSummary.model_ratings || ratingSummary.model_ratings.length === 0) && (
                                             <div className="text-sm text-muted-foreground">
                                               No ratings generated for this question.
+                                            </div>
+                                          )}
+                                      </div>
+                                    </section>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {activeResultTab === "categories" && (
+                            <div className="space-y-4">
+                              <div className="mb-4">
+                                <h4 className="font-semibold text-foreground">Categories</h4>
+                                <p className="text-sm text-muted-foreground">
+                                  Elo rankings of models per category in this experiment.
+                                </p>
+                              </div>
+                              {!detail?.categoryRatings ? (
+                                <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                  <div className="py-10 text-center text-muted-foreground">
+                                    {isLoadingDetail ? (
+                                      <>
+                                        <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin" />
+                                        Loading category ratings...
+                                      </>
+                                    ) : (
+                                      "No category-based ratings are available yet."
+                                    )}
+                                  </div>
+                                </section>
+                              ) : !Array.isArray(detail.categoryRatings) || detail.categoryRatings.length === 0 ? (
+                                <section className="rounded-2xl border border-border bg-background p-5 shadow-sm">
+                                  <div className="py-10 text-center text-muted-foreground">
+                                    <p className="mb-4">No categories exist in this experiment or data format is unexpected.</p>
+                                    <pre className="text-left text-xs bg-muted/50 p-4 rounded-md overflow-x-auto text-muted-foreground">
+                                      {JSON.stringify(detail.categoryRatings, null, 2)}
+                                    </pre>
+                                  </div>
+                                </section>
+                              ) : (
+                                <div className="grid gap-4 xl:grid-cols-2">
+                                  {Array.isArray(detail.categoryRatings) && detail.categoryRatings.map((ratingSummary, ratingIndex) => (
+                                    <section
+                                      key={ratingSummary.category || `category-${ratingIndex}`}
+                                      className="rounded-2xl border border-border bg-background p-5 shadow-sm"
+                                    >
+                                      <h5 className="font-semibold text-foreground mb-3 truncate" title={ratingSummary.category}>
+                                        {ratingSummary.category || 'Unknown Category'}
+                                      </h5>
+                                      <div className="space-y-3">
+                                        {[...(ratingSummary.model_ratings || [])]
+                                          .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
+                                          .map((entry, index) => (
+                                            <div
+                                              key={entry.model_id || `model-${index}`}
+                                              className="rounded-xl border border-border bg-muted/20 px-4 py-3 shadow-sm"
+                                            >
+                                              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                                <div className="flex items-center gap-2">
+                                                  <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">
+                                                    #{index + 1}
+                                                  </span>
+                                                  <p className="font-medium text-foreground">
+                                                    {entry.model_name || 'Unknown Model'}
+                                                  </p>
+                                                </div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                  <Badge variant="secondary">
+                                                    Elo {formatEloRating(entry.rating)}
+                                                  </Badge>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          ))}
+                                          {(!ratingSummary.model_ratings || ratingSummary.model_ratings.length === 0) && (
+                                            <div className="text-sm text-muted-foreground">
+                                              No ratings generated for this category.
                                             </div>
                                           )}
                                       </div>

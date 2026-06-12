@@ -1209,6 +1209,25 @@ export interface BackendEvaluationQuestionRatingSummary {
   model_ratings: BackendExperimentModelRatingRow[];
 }
 
+export interface BackendCategoryRatingSummary {
+  category: string;
+  model_ratings: BackendExperimentModelRatingRow[];
+}
+
+export const getExperimentCategoryRatings = (
+  accessToken: string,
+  experimentId: string
+) =>
+  requestJson<BackendCategoryRatingSummary[]>(
+    `/analytics/experiments/${experimentId}/category-ratings`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
 export const getExperimentEvaluationQuestionRatings = (
   accessToken: string,
   experimentId: string

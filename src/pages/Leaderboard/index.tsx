@@ -21,6 +21,7 @@ import {
   getExperimentModelRatings,
   getExperimentModels,
   getQuestionsByPool,
+  getExperimentCategoryRatings,
 } from "../../lib/authApi";
 import { Loader2 } from "lucide-react";
 
@@ -30,14 +31,14 @@ type SortDirection = "asc" | "desc";
 interface LeaderboardEntry {
   id: string;
   modelName: string;
-  provider: string; // we can leave blank or use from modelName
+  provider: string;
   eloRating: number;
   winRate: number;
   totalMatchups: number;
   systemPrompt: string;
 }
 
-const EXPERIMENT_ID = "YOUR_EXPERIMENT_ID_HERE"; // Hardcoded for now
+const TARGET_EXPERIMENT_NAME = "İzmir Yerel Bilgi Benchmark";
 
 export const Leaderboard: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
@@ -46,7 +47,8 @@ export const Leaderboard: React.FC = () => {
 
   const [experimentName, setExperimentName] = useState<string>("");
   const [categories, setCategories] = useState<string[]>([]);
-  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [allEntries, setAllEntries] = useState<LeaderboardEntry[]>([]);
+  const [categoryEntriesMap, setCategoryEntriesMap] = useState<Record<string, LeaderboardEntry[]>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -55,25 +57,28 @@ export const Leaderboard: React.FC = () => {
         const token = localStorage.getItem("bt_access_token");
         if (!token) return;
 
-        let expId = EXPERIMENT_ID;
-        if (expId === "YOUR_EXPERIMENT_ID_HERE") {
-           const { getExperiments } = await import("../../lib/authApi");
-           const exps = await getExperiments(token, 0, 10);
-           if (exps.length > 0) {
-             expId = exps[0].id;
-           } else {
-             setLoading(false);
-             return;
-           }
+        let expId = "";
+        const { getExperiments } = await import("../../lib/authApi");
+        const exps = await getExperiments(token, 0, 100);
+        
+        const targetExp = exps.find(e => e.name === TARGET_EXPERIMENT_NAME);
+        if (targetExp) {
+            expId = targetExp.id;
+        } else if (exps.length > 0) {
+            expId = exps[0].id;
+        } else {
+            setLoading(false);
+            return;
         }
 
         const exp = await getExperimentById(token, expId);
         setExperimentName(exp.name);
 
-        const [ratingsData, modelsData, questionsData] = await Promise.all([
+        const [ratingsData, modelsData, questionsData, categoryRatingsDataRaw] = await Promise.all([
           getExperimentModelRatings(token, expId).catch(() => null),
           getExperimentModels(token, expId).catch(() => []),
           getQuestionsByPool(token, exp.input_pool_id).catch(() => []),
+          getExperimentCategoryRatings(token, expId).catch(() => null),
         ]);
 
         const uniqueCategories = Array.from(
@@ -81,23 +86,44 @@ export const Leaderboard: React.FC = () => {
         );
         setCategories(uniqueCategories);
 
-        if (ratingsData && ratingsData.model_ratings) {
-          const newEntries: LeaderboardEntry[] = ratingsData.model_ratings.map((row) => {
+        // Normalize raw category data handling object wrappers
+        let categoryRatingsData = categoryRatingsDataRaw;
+        if (categoryRatingsData && typeof categoryRatingsData === "object" && !Array.isArray(categoryRatingsData)) {
+            const arrayValue = Object.values(categoryRatingsData).find((v) => Array.isArray(v));
+            categoryRatingsData = arrayValue || categoryRatingsData;
+        }
+
+        const buildEntries = (ratingsList: any[]) => {
+          return ratingsList.map((row) => {
             const promptEntry = modelsData.find((m) => m.model_id === row.model_id);
             const total = row.wins + row.losses + row.draws;
             const winRate = total > 0 ? (row.wins / total) * 100 : 0;
             return {
               id: row.model_id,
               modelName: row.model_name,
-              provider: "", // Could be derived if needed
+              provider: "",
               eloRating: Math.round(row.rating),
               winRate: winRate,
               totalMatchups: total,
               systemPrompt: promptEntry?.system_prompt || "N/A",
             };
           });
-          setEntries(newEntries);
+        };
+
+        if (ratingsData && ratingsData.model_ratings) {
+          setAllEntries(buildEntries(ratingsData.model_ratings));
         }
+
+        if (Array.isArray(categoryRatingsData)) {
+          const map: Record<string, LeaderboardEntry[]> = {};
+          categoryRatingsData.forEach(catSummary => {
+             if (catSummary.category && Array.isArray(catSummary.model_ratings)) {
+                 map[catSummary.category] = buildEntries(catSummary.model_ratings);
+             }
+          });
+          setCategoryEntriesMap(map);
+        }
+
       } catch (e) {
         console.error("Failed to load leaderboard data", e);
       } finally {
@@ -107,6 +133,11 @@ export const Leaderboard: React.FC = () => {
 
     fetchData();
   }, []);
+
+  const entriesToDisplay = useMemo(() => {
+    if (selectedCategory === "all") return allEntries;
+    return categoryEntriesMap[selectedCategory] || [];
+  }, [selectedCategory, allEntries, categoryEntriesMap]);
 
   const handleSort = (field: SortField) => {
     const newDirection =
@@ -135,7 +166,7 @@ export const Leaderboard: React.FC = () => {
   };
 
   const sortedLeaderboard = useMemo(() => {
-    return [...entries].sort((a, b) => {
+    return [...entriesToDisplay].sort((a, b) => {
       const aValue = a[sortField];
       const bValue = b[sortField];
       if (sortDirection === "desc") {
@@ -144,7 +175,7 @@ export const Leaderboard: React.FC = () => {
         return aValue > bValue ? 1 : -1;
       }
     });
-  }, [entries, sortField, sortDirection, selectedCategory]);
+  }, [entriesToDisplay, sortField, sortDirection]);
 
   if (loading) {
     return (

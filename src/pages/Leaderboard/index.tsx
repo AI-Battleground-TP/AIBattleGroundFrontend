@@ -17,43 +17,100 @@ import {
   TableRow,
 } from "../../components/ui/table";
 import {
-  dummyLeaderboard,
-  dummyLeaderboardByCategory,
-  leaderboardCategories,
-} from "../../utils/dummyData";
-import type { LeaderboardEntry, LeaderboardCategory } from "../../types";
+  getExperimentById,
+  getExperimentModelRatings,
+  getExperimentModels,
+  getQuestionsByPool,
+} from "../../lib/authApi";
+import { Loader2 } from "lucide-react";
 
-type SortField = "eloRating" | "winRate" | "avgResponseTime" | "totalVotes";
+type SortField = "eloRating" | "winRate";
 type SortDirection = "asc" | "desc";
 
+interface LeaderboardEntry {
+  id: string;
+  modelName: string;
+  provider: string; // we can leave blank or use from modelName
+  eloRating: number;
+  winRate: number;
+  totalMatchups: number;
+  systemPrompt: string;
+}
+
+const EXPERIMENT_ID = "YOUR_EXPERIMENT_ID_HERE"; // Hardcoded for now
+
 export const Leaderboard: React.FC = () => {
-  const [selectedCategory, setSelectedCategory] = useState<LeaderboardCategory>("all");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [sortField, setSortField] = useState<SortField>("eloRating");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
-  // Get leaderboard data based on selected category
-  const categoryLeaderboard = useMemo(() => {
-    return dummyLeaderboardByCategory[selectedCategory] || dummyLeaderboard;
-  }, [selectedCategory]);
+  const [experimentName, setExperimentName] = useState<string>("");
+  const [categories, setCategories] = useState<string[]>([]);
+  const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const token = localStorage.getItem("bt_access_token");
+        if (!token) return;
+
+        let expId = EXPERIMENT_ID;
+        if (expId === "YOUR_EXPERIMENT_ID_HERE") {
+           const { getExperiments } = await import("../../lib/authApi");
+           const exps = await getExperiments(token, 0, 10);
+           if (exps.length > 0) {
+             expId = exps[0].id;
+           } else {
+             setLoading(false);
+             return;
+           }
+        }
+
+        const exp = await getExperimentById(token, expId);
+        setExperimentName(exp.name);
+
+        const [ratingsData, modelsData, questionsData] = await Promise.all([
+          getExperimentModelRatings(token, expId).catch(() => null),
+          getExperimentModels(token, expId).catch(() => []),
+          getQuestionsByPool(token, exp.input_pool_id).catch(() => []),
+        ]);
+
+        const uniqueCategories = Array.from(
+          new Set(questionsData.map((q) => q.category).filter((c): c is string => !!c))
+        );
+        setCategories(uniqueCategories);
+
+        if (ratingsData && ratingsData.model_ratings) {
+          const newEntries: LeaderboardEntry[] = ratingsData.model_ratings.map((row) => {
+            const promptEntry = modelsData.find((m) => m.model_id === row.model_id);
+            const total = row.wins + row.losses + row.draws;
+            const winRate = total > 0 ? (row.wins / total) * 100 : 0;
+            return {
+              id: row.model_id,
+              modelName: row.model_name,
+              provider: "", // Could be derived if needed
+              eloRating: Math.round(row.rating),
+              winRate: winRate,
+              totalMatchups: total,
+              systemPrompt: promptEntry?.system_prompt || "N/A",
+            };
+          });
+          setEntries(newEntries);
+        }
+      } catch (e) {
+        console.error("Failed to load leaderboard data", e);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
 
   const handleSort = (field: SortField) => {
     const newDirection =
       field === sortField && sortDirection === "desc" ? "asc" : "desc";
-
-    const sorted = [...leaderboard].sort((a, b) => {
-      const aValue = a[field];
-      const bValue = b[field];
-
-      if (newDirection === "desc") {
-        return bValue > aValue ? 1 : -1;
-      } else {
-        return aValue > bValue ? 1 : -1;
-      }
-    });
-
-    setLeaderboard(sorted);
     setSortField(field);
     setSortDirection(newDirection);
   };
@@ -77,31 +134,8 @@ export const Leaderboard: React.FC = () => {
     return `${index + 1}`;
   };
 
-  const categoryLabels: Record<LeaderboardCategory, string> = {
-    all: "All Categories",
-    general: "General",
-    reasoning: "Reasoning",
-    coding: "Coding",
-    science: "Science",
-    health: "Health",
-    law: "Law",
-    finance: "Finance",
-    business: "Business",
-    education: "Education",
-    history: "History",
-    mathematics: "Mathematics",
-    philosophy: "Philosophy",
-    religion: "Religion",
-    "creative-writing": "Creative Writing",
-    summarization: "Summarization",
-    translation: "Translation",
-    safety: "Safety",
-    sports: "Sports",
-  };
-
-  // Update leaderboard when category or sort changes
-  useEffect(() => {
-    const sorted = [...categoryLeaderboard].sort((a, b) => {
+  const sortedLeaderboard = useMemo(() => {
+    return [...entries].sort((a, b) => {
       const aValue = a[sortField];
       const bValue = b[sortField];
       if (sortDirection === "desc") {
@@ -110,8 +144,15 @@ export const Leaderboard: React.FC = () => {
         return aValue > bValue ? 1 : -1;
       }
     });
-    setLeaderboard(sorted);
-  }, [selectedCategory, sortField, sortDirection, categoryLeaderboard]);
+  }, [entries, sortField, sortDirection, selectedCategory]);
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
@@ -123,6 +164,11 @@ export const Leaderboard: React.FC = () => {
           <p className="text-muted-foreground mt-2">
             Rankings based on blind evaluation results using ELO rating system
           </p>
+          {experimentName && (
+            <h2 className="text-xl font-semibold text-primary mt-2">
+              {experimentName}
+            </h2>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <label className="text-sm font-medium text-foreground whitespace-nowrap">
@@ -130,15 +176,16 @@ export const Leaderboard: React.FC = () => {
           </label>
           <Select
             value={selectedCategory}
-            onValueChange={(value) => setSelectedCategory(value as LeaderboardCategory)}
+            onValueChange={setSelectedCategory}
           >
             <SelectTrigger className="w-[200px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {leaderboardCategories.map((category) => (
+              <SelectItem value="all">All Categories</SelectItem>
+              {categories.map((category) => (
                 <SelectItem key={category} value={category}>
-                  {categoryLabels[category]}
+                  {category}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -146,81 +193,30 @@ export const Leaderboard: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid md:grid-cols-4 gap-4">
-        <Card className="bg-gradient-to-br from-primary/5 to-primary/10">
-          <div className="text-center">
-            <p className="text-sm text-muted-foreground mb-1">Total Models</p>
-            <p className="text-3xl font-bold text-primary">
-              {leaderboard.length}
-            </p>
-          </div>
-        </Card>
-        <Card className="bg-gradient-to-br from-primary/10 to-primary/20">
-          <div className="text-center">
-            <p className="text-sm text-muted-foreground mb-1">Top Model</p>
-            <p className="text-lg font-bold text-primary">
-              {leaderboard[0]?.modelName}
-            </p>
-          </div>
-        </Card>
-        <Card className="bg-gradient-to-br from-primary/10 to-primary/20">
-          <div className="text-center">
-            <p className="text-sm text-muted-foreground mb-1">Total Evaluations</p>
-            <p className="text-3xl font-bold text-primary">
-              {leaderboard.reduce((sum, entry) => sum + entry.totalVotes, 0)}
-            </p>
-          </div>
-        </Card>
-        <Card className="bg-gradient-to-br from-accent/10 to-accent/20">
-          <div className="text-center">
-            <p className="text-sm text-muted-foreground mb-1">Avg Win Rate</p>
-            <p className="text-3xl font-bold text-accent-foreground">
-              {(
-                leaderboard.reduce((sum, entry) => sum + entry.winRate, 0) /
-                leaderboard.length
-              ).toFixed(1)}
-              %
-            </p>
-          </div>
-        </Card>
-      </div>
-
-      <Card title={`Model Rankings - ${categoryLabels[selectedCategory]}`}>
+      <Card title={`Model Rankings ${selectedCategory !== "all" ? `- ${selectedCategory}` : ""}`}>
         <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/30 hover:bg-muted/30">
                 <TableHead className="w-20">Rank</TableHead>
                 <TableHead>Model Name</TableHead>
-                <TableHead>Provider</TableHead>
                 <TableHead
-                  className="cursor-pointer hover:bg-accent"
+                  className="cursor-pointer hover:bg-accent w-32"
                   onClick={() => handleSort("eloRating")}
                 >
                   ELO Rating {getSortIcon("eloRating")}
                 </TableHead>
                 <TableHead
-                  className="cursor-pointer hover:bg-accent"
+                  className="cursor-pointer hover:bg-accent w-48"
                   onClick={() => handleSort("winRate")}
                 >
                   Win Rate {getSortIcon("winRate")}
                 </TableHead>
-                <TableHead
-                  className="cursor-pointer hover:bg-accent"
-                  onClick={() => handleSort("avgResponseTime")}
-                >
-                  Avg Response Time {getSortIcon("avgResponseTime")}
-                </TableHead>
-                <TableHead
-                  className="cursor-pointer hover:bg-accent"
-                  onClick={() => handleSort("totalVotes")}
-                >
-                  Total Votes {getSortIcon("totalVotes")}
-                </TableHead>
+                <TableHead className="w-[40%]">System Prompt</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {leaderboard.map((entry, index) => (
+              {sortedLeaderboard.map((entry, index) => (
                 <TableRow
                   key={entry.id}
                   className={index < 3 ? "bg-primary/10" : ""}
@@ -236,31 +232,30 @@ export const Leaderboard: React.FC = () => {
                     {entry.modelName}
                   </TableCell>
                   <TableCell>
-                    <div className="text-sm text-muted-foreground">
-                      {entry.provider}
-                    </div>
-                  </TableCell>
-                  <TableCell>
                     <div className="font-semibold">{entry.eloRating}</div>
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
-                      <div className="text-sm font-medium">
+                      <div className="text-sm font-medium whitespace-nowrap">
                         {entry.winRate.toFixed(1)}%
                       </div>
                       <Progress value={entry.winRate} className="w-16 h-2" />
                     </div>
                   </TableCell>
                   <TableCell>
-                    {entry.avgResponseTime.toFixed(1)}s
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm text-muted-foreground">
-                      {entry.totalVotes}
+                    <div className="text-sm text-muted-foreground line-clamp-3 overflow-hidden text-ellipsis whitespace-pre-wrap max-h-20" title={entry.systemPrompt}>
+                      {entry.systemPrompt}
                     </div>
                   </TableCell>
                 </TableRow>
               ))}
+              {sortedLeaderboard.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                    No models found for this experiment.
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
         </div>

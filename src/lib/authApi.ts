@@ -832,6 +832,20 @@ export const attachModelToExperiment = (
     }
   );
 
+export const getExperimentModels = (
+  accessToken: string,
+  experimentId: string
+) =>
+  requestJson<BackendExperimentModelPrompt[]>(
+    `/experiments/${experimentId}/models`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
+
 export const getActiveJudgeExperiments = (
   accessToken: string,
   skip = 0,
@@ -903,6 +917,14 @@ export const getArchivedExperiments = (
 
 export const getExperiments = (accessToken: string, skip = 0, limit = 100) =>
   requestJson<BackendExperiment[]>(`/experiments?skip=${skip}&limit=${limit}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+export const getExperimentById = (accessToken: string, experimentId: string) =>
+  requestJson<BackendExperiment>(`/experiments/${experimentId}`, {
     method: "GET",
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -1180,3 +1202,23 @@ export const retryExperimentModelResponses = (
       Authorization: `Bearer ${accessToken}`,
     },
   });
+
+export interface BackendEvaluationQuestionRatingSummary {
+  evaluation_question_id: string;
+  evaluation_question: string;
+  model_ratings: BackendExperimentModelRatingRow[];
+}
+
+export const getExperimentEvaluationQuestionRatings = (
+  accessToken: string,
+  experimentId: string
+) =>
+  requestJson<BackendEvaluationQuestionRatingSummary[]>(
+    `/analytics/experiments/${experimentId}/evaluation-question-ratings`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );

@@ -127,10 +127,26 @@ export interface BackendTest {
   model_a_id: string;
   model_b_id: string;
   question_id: string;
-  feedback_a?: string | null;
-  feedback_b?: string | null;
+  model_a_feedback?: string | null;
+  model_b_feedback?: string | null;
   created_at: string;
 }
+
+export const updateTest = (
+  accessToken: string,
+  testId: string,
+  payload: {
+    model_a_feedback?: string | null;
+    model_b_feedback?: string | null;
+  }
+) =>
+  requestJson<BackendTest>(`/tests/${testId}`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
 
 export interface BackendResponseItem {
   id: string;

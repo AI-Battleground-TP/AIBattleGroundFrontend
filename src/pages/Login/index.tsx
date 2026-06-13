@@ -57,7 +57,6 @@ export const Login: React.FC = () => {
   const [loginPassword, setLoginPassword] = useState("");
   const [selectedOrgId, setSelectedOrgId] = useState("");
   const [loginAccessToken, setLoginAccessToken] = useState("");
-  const [loginDisplayName, setLoginDisplayName] = useState("");
   const [loginOrganizations, setLoginOrganizations] = useState<OrganizationItem[]>(
     []
   );
@@ -94,7 +93,6 @@ export const Login: React.FC = () => {
       }
 
       setLoginAccessToken(tokenResponse.access_token);
-      setLoginDisplayName(loginEmail.trim().toLowerCase());
       setLoginOrganizations(organizations);
       setSelectedOrgId(organizations[0].id);
       setLoginStep("organization");
@@ -145,7 +143,7 @@ export const Login: React.FC = () => {
 
       login({
         email: me.email,
-        name: loginDisplayName || `${me.name} ${me.surname}`.trim(),
+        name: `${me.name} ${me.surname}`.trim(),
         role: mappedRole,
         isHead: isHeadUser,
         organizationId: selectedOrganization.id,

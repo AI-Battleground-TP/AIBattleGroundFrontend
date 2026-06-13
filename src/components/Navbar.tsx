@@ -28,7 +28,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
-import { User, MoreVertical } from "lucide-react";
+import { 
+  User, 
+  MoreVertical, 
+  Menu, 
+  X, 
+  Building2, 
+  LogOut, 
+  Info, 
+  Settings, 
+  HelpCircle, 
+  LayoutDashboard, 
+  Trophy, 
+  BookOpen, 
+  Users, 
+  ClipboardCheck, 
+  Layout 
+} from "lucide-react";
 import { createOrganization, joinOrganization } from "../lib/authApi";
 
 export const Navbar: React.FC = () => {
@@ -53,6 +69,7 @@ export const Navbar: React.FC = () => {
   const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
   const [joinOrganizationId, setJoinOrganizationId] = useState("");
   const [isJoiningOrganization, setIsJoiningOrganization] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -167,220 +184,344 @@ export const Navbar: React.FC = () => {
     organizations.find((o) => o.id === user?.organizationId)?.name ||
     "";
 
+  const navLinks = [
+    { to: "/leaderboard", label: "Leaderboard", icon: Trophy },
+    ...(user?.role === "judge" ? [{ to: "/guidelines", label: "Guidelines", icon: BookOpen }] : []),
+    ...(user?.role === "user" ? [
+      { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { to: "/models", label: "Models", icon: Layout },
+      { to: "/questions", label: "Questions", icon: HelpCircle },
+      { to: "/results", label: "Results", icon: ClipboardCheck },
+      ...(user.isHead ? [{ to: "/judges", label: "Judges", icon: Users }] : []),
+    ] : []),
+    ...(user?.role === "judge" ? [{ to: "/judge", label: "Judge", icon: ClipboardCheck }] : []),
+  ];
+
   return (
-    <nav className="bg-background border-b relative z-50">
-      <div className="w-full px-4 sm:px-6 lg:px-8">
-        <div className="flex w-full min-w-0 justify-between items-center h-14 gap-4">
-          <div className="flex min-w-0 items-center justify-start">
-            <Link to="/" className="flex items-center space-x-1 mr-6">
-              <img
-                src="/logo_yazisiz.png"
-                alt="AI Battleground"
-                className="h-12 w-auto"
-              />
-              <span className="text-lg font-bold bg-gradient-to-r from-red-500 to-purple-600 bg-clip-text text-transparent hidden sm:block">
-                AI Battleground
-              </span>
-            </Link>
-            <div className="flex items-baseline space-x-2">
-              <Link to="/leaderboard">
-                <Button
-                  size="sm"
-                  variant={isActive("/leaderboard") ? "secondary" : "ghost"}
-                  className="px-2"
-                >
-                  Leaderboard
-                </Button>
-              </Link>
-              {user && user.role === "judge" && (
-                <Link to="/guidelines">
-                  <Button
-                    size="sm"
-                    variant={isActive("/guidelines") ? "secondary" : "ghost"}
-                    className="px-2"
-                  >
-                    Guidelines
-                  </Button>
+    <>
+      <nav className="bg-background border-b sticky top-0 z-50 w-full">
+        <div className="w-full px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            {/* Left side: Logo & Navigation */}
+            <div className="flex items-center flex-1 min-w-0">
+              <div className="flex items-center shrink-0 mr-6">
+                <Link to="/" className="flex items-center space-x-2">
+                  <img
+                    src="/logo_yazisiz.png"
+                    alt="AI Battleground"
+                    className="h-10 w-auto"
+                  />
+                  <span className="text-lg font-bold bg-gradient-to-r from-red-500 to-purple-600 bg-clip-text text-transparent hidden md:block">
+                    AI Battleground
+                  </span>
                 </Link>
-              )}
-              {user && user.role === "user" && (
-                <>
-                  <Link to="/dashboard">
+              </div>
+
+              {/* Desktop Navigation Links */}
+              <div className="hidden lg:flex items-center space-x-1 overflow-x-auto no-scrollbar">
+                {navLinks.map((link) => (
+                  <Link key={link.to} to={link.to}>
                     <Button
                       size="sm"
-                      variant={isActive("/dashboard") ? "secondary" : "ghost"}
-                      className="px-2"
+                      variant={isActive(link.to) ? "secondary" : "ghost"}
+                      className="px-3 whitespace-nowrap"
                     >
-                      Dashboard
+                      <link.icon className="w-4 h-4 mr-1.5" />
+                      {link.label}
                     </Button>
                   </Link>
-                  <Link to="/models">
-                    <Button
-                      size="sm"
-                      variant={isActive("/models") ? "secondary" : "ghost"}
-                      className="px-2"
-                    >
-                      Models
-                    </Button>
-                  </Link>
-                  <Link to="/questions">
-                    <Button
-                      size="sm"
-                      variant={isActive("/questions") ? "secondary" : "ghost"}
-                      className="px-2"
-                    >
-                      Questions
-                    </Button>
-                  </Link>
-                  <Link to="/results">
-                    <Button
-                      size="sm"
-                      variant={isActive("/results") ? "secondary" : "ghost"}
-                      className="px-2"
-                    >
-                      Results
-                    </Button>
-                  </Link>
-                  {user.isHead && (
-                    <Link to="/judges">
-                      <Button
-                        size="sm"
-                        variant={isActive("/judges") ? "secondary" : "ghost"}
-                        className="px-2"
-                      >
-                        Judges
-                      </Button>
-                    </Link>
-                  )}
-                </>
-              )}
-              {user && user.role === "judge" && (
-                <>
-                  <Link to="/judge">
-                    <Button
-                      size="sm"
-                      variant={isActive("/judge") ? "secondary" : "ghost"}
-                      className="px-2"
-                    >
-                      Judge
-                    </Button>
-                  </Link>
-                </>
-              )}
+                ))}
+              </div>
             </div>
-          </div>
-          <div className="flex flex-shrink-0 items-center justify-end space-x-2">
-            {user ? (
-              <>
-                {/* Role Switcher (HEAD only) */}
-                {user.isHead && (
-                  <div className="flex items-center space-x-2 border border-border rounded-md p-1 bg-muted/30">
-                    <button
-                      onClick={() => handleRoleSwitch("user")}
-                      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                        user.role === "user"
-                          ? "bg-primary text-primary-foreground"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      Head
-                    </button>
-                    <button
-                      onClick={() => handleRoleSwitch("judge")}
-                      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
-                        user.role === "judge"
-                          ? "bg-primary text-primary-foreground"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      Judge
-                    </button>
-                  </div>
-                )}
 
-                <div className="flex min-w-0 max-w-[min(100%,20rem)] sm:max-w-xs items-center gap-2">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="max-w-full truncate text-sm text-foreground">
-                        {currentOrganizationLabel || "—"}
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {currentOrganizationLabel || "No organization selected"}
-                    </TooltipContent>
-                  </Tooltip>
-                  <ShadcnButton
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0"
-                    onClick={openSwitchOrganizationDialog}
-                    disabled={organizations.length === 0}
-                  >
-                    Switch Organization
-                  </ShadcnButton>
-                </div>
+            {/* Right side actions (Desktop) */}
+            <div className="hidden md:flex items-center space-x-3 ml-4">
+              {user ? (
+                <>
+                  {user.isHead && (
+                    <div className="flex items-center space-x-1 border border-border rounded-md p-1 bg-muted/30 shrink-0">
+                      <button
+                        onClick={() => handleRoleSwitch("user")}
+                        className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                          user.role === "user"
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        Head
+                      </button>
+                      <button
+                        onClick={() => handleRoleSwitch("judge")}
+                        className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+                          user.role === "judge"
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        Judge
+                      </button>
+                    </div>
+                  )}
 
-                <span className="text-sm text-muted-foreground hidden md:block">
-                  {user.name}
-                </span>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Link to={user.role === "judge" ? "/judge-profile" : "/profile"}>
-                      <Avatar className="h-8 w-8 cursor-pointer hover:ring-2 hover:ring-primary transition-all">
-                        <AvatarFallback className="bg-primary/10 text-primary">
-                          <User className="h-4 w-4" />
-                        </AvatarFallback>
-                      </Avatar>
-                    </Link>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Profile</p>
-                  </TooltipContent>
-                </Tooltip>
-                
-                {/* 3-dot menu */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+                  <div className="flex items-center gap-2 max-w-[200px]">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="truncate text-sm text-foreground font-medium">
+                          {currentOrganizationLabel || "—"}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {currentOrganizationLabel || "No organization selected"}
+                      </TooltipContent>
+                    </Tooltip>
                     <ShadcnButton
                       variant="outline"
                       size="sm"
-                      className="p-1.5 h-auto"
+                      className="h-8 shrink-0 px-2"
+                      onClick={openSwitchOrganizationDialog}
                     >
-                      <MoreVertical className="w-4 h-4" />
+                      <Building2 className="w-3.5 h-3.5 mr-1.5" />
+                      <span className="hidden lg:inline text-xs ml-1.5">Switch</span>
                     </ShadcnButton>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-48">
-                    <DropdownMenuItem onClick={() => handleMenuItemClick("about")}>
-                      About Us
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleMenuItemClick("howItWorks")}>
-                      How It Works
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleMenuItemClick("help")}>
-                      Help
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={handleLogout} className="text-destructive">
-                      Logout
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </>
-            ) : (
-              <>
-                <Link to="/login">
-                  <Button size="sm" variant="outline">
-                    Login
-                  </Button>
-                </Link>
-                <Link to="/signup">
-                  <Button size="sm">Sign Up</Button>
-                </Link>
-              </>
-            )}
+                  </div>
+
+                  <div className="h-6 w-px bg-border mx-1" />
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Link to={user.role === "judge" ? "/judge-profile" : "/profile"}>
+                        <Avatar className="h-8 w-8 cursor-pointer hover:ring-2 hover:ring-primary transition-all">
+                          <AvatarFallback className="bg-primary/10 text-primary">
+                            <User className="h-4 w-4" />
+                          </AvatarFallback>
+                        </Avatar>
+                      </Link>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{user.name}</p>
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <ShadcnButton
+                        variant="ghost"
+                        size="sm"
+                        className="p-1 h-8 w-8"
+                      >
+                        <MoreVertical className="w-4 h-4" />
+                      </ShadcnButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <div className="px-2 py-1.5 md:hidden">
+                        <p className="text-sm font-medium">{user.name}</p>
+                        <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                      </div>
+                      <DropdownMenuSeparator className="md:hidden" />
+                      <DropdownMenuItem onClick={() => handleMenuItemClick("about")}>
+                        <Info className="w-4 h-4 mr-2" />
+                        About Us
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleMenuItemClick("howItWorks")}>
+                        <HelpCircle className="w-4 h-4 mr-2" />
+                        How It Works
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleMenuItemClick("help")}>
+                        <Settings className="w-4 h-4 mr-2" />
+                        Help & FAQ
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={handleLogout} className="text-destructive">
+                        <LogOut className="w-4 h-4 mr-2" />
+                        Logout
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
+              ) : (
+                <div className="flex items-center space-x-2">
+                  <Link to="/login">
+                    <Button size="sm" variant="ghost">Login</Button>
+                  </Link>
+                  <Link to="/signup">
+                    <Button size="sm">Sign Up</Button>
+                  </Link>
+                </div>
+              )}
+            </div>
+
+            {/* Mobile Menu Button */}
+            <div className="flex lg:hidden items-center">
+               <ShadcnButton
+                variant="ghost"
+                size="sm"
+                className="p-2"
+                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              >
+                {isMobileMenuOpen ? (
+                  <X className="w-6 h-6" />
+                ) : (
+                  <Menu className="w-6 h-6" />
+                )}
+              </ShadcnButton>
+            </div>
           </div>
         </div>
-      </div>
+
+        {/* Mobile Menu Content */}
+        {isMobileMenuOpen && (
+          <div className="lg:hidden border-t bg-background overflow-y-auto max-h-[calc(100vh-4rem)]">
+            <div className="px-4 pt-2 pb-6 space-y-4">
+              {/* User Info on Mobile */}
+              {user && (
+                <div className="flex items-center space-x-3 p-3 bg-muted/30 rounded-lg">
+                  <Avatar className="h-10 w-10">
+                    <AvatarFallback className="bg-primary/10 text-primary">
+                      <User className="h-5 w-5" />
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{user.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">{user.email}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Nav Links on Mobile */}
+              <div className="space-y-1">
+                <p className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                  Navigation
+                </p>
+                {navLinks.map((link) => (
+                  <Link
+                    key={link.to}
+                    to={link.to}
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className={`flex items-center px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${
+                      isActive(link.to)
+                        ? "bg-primary/10 text-primary"
+                        : "text-foreground hover:bg-muted"
+                    }`}
+                  >
+                    <link.icon className="w-4 h-4 mr-3" />
+                    {link.label}
+                  </Link>
+                ))}
+              </div>
+
+              {/* Actions on Mobile */}
+              {user && (
+                <div className="space-y-4 pt-2 border-t">
+                  {user.isHead && (
+                    <div className="px-3 space-y-2">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                        Role
+                      </p>
+                      <div className="flex p-1 bg-muted rounded-md">
+                        <button
+                          onClick={() => handleRoleSwitch("user")}
+                          className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                            user.role === "user"
+                              ? "bg-background shadow-sm text-foreground"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          Head
+                        </button>
+                        <button
+                          onClick={() => handleRoleSwitch("judge")}
+                          className={`flex-1 px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                            user.role === "judge"
+                              ? "bg-background shadow-sm text-foreground"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          Judge
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="px-3 space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Organization
+                    </p>
+                    <div className="flex items-center justify-between p-3 bg-muted/30 border rounded-md">
+                      <span className="text-sm truncate mr-2 font-medium">{currentOrganizationLabel || "No Organization"}</span>
+                      <ShadcnButton
+                        variant="outline"
+                        size="sm"
+                        className="h-8 shrink-0"
+                        onClick={() => {
+                          openSwitchOrganizationDialog();
+                          setIsMobileMenuOpen(false);
+                        }}
+                      >
+                        <Building2 className="w-3.5 h-3.5 mr-1.5" />
+                        Switch
+                      </ShadcnButton>
+                    </div>
+                  </div>
+
+                  <div className="px-3 pt-2 space-y-1">
+                     <button
+                      onClick={() => {
+                        handleMenuItemClick("about");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="flex w-full items-center px-3 py-2 text-sm font-medium text-foreground hover:bg-muted rounded-md transition-colors"
+                    >
+                      <Info className="w-4 h-4 mr-3 text-muted-foreground" />
+                      About Us
+                    </button>
+                    <button
+                      onClick={() => {
+                        handleMenuItemClick("howItWorks");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="flex w-full items-center px-3 py-2 text-sm font-medium text-foreground hover:bg-muted rounded-md transition-colors"
+                    >
+                      <HelpCircle className="w-4 h-4 mr-3 text-muted-foreground" />
+                      How It Works
+                    </button>
+                    <button
+                      onClick={() => {
+                        handleMenuItemClick("help");
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="flex w-full items-center px-3 py-2 text-sm font-medium text-foreground hover:bg-muted rounded-md transition-colors"
+                    >
+                      <Settings className="w-4 h-4 mr-3 text-muted-foreground" />
+                      Help & FAQ
+                    </button>
+                    <button
+                      onClick={() => {
+                        handleLogout();
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="flex w-full items-center px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 rounded-md transition-colors mt-2"
+                    >
+                      <LogOut className="w-4 h-4 mr-3" />
+                      Logout
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {!user && (
+                <div className="grid grid-cols-2 gap-3 px-3">
+                  <Link to="/login" onClick={() => setIsMobileMenuOpen(false)}>
+                    <Button variant="outline" className="w-full">Login</Button>
+                  </Link>
+                  <Link to="/signup" onClick={() => setIsMobileMenuOpen(false)}>
+                    <Button className="w-full">Sign Up</Button>
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </nav>
 
       <Dialog open={isSwitchDialogOpen} onOpenChange={setIsSwitchDialogOpen}>
         <DialogContent>
@@ -493,7 +634,6 @@ export const Navbar: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      {/* About Us Modal */}
       <Modal
         isOpen={activeModal === "about"}
         onClose={closeModal}
@@ -538,7 +678,6 @@ export const Navbar: React.FC = () => {
         </div>
       </Modal>
 
-      {/* How It Works Modal */}
       <Modal
         isOpen={activeModal === "howItWorks"}
         onClose={closeModal}
@@ -623,7 +762,6 @@ export const Navbar: React.FC = () => {
         </div>
       </Modal>
 
-      {/* Help Modal */}
       <Modal
         isOpen={activeModal === "help"}
         onClose={closeModal}
@@ -717,6 +855,6 @@ export const Navbar: React.FC = () => {
           </div>
         </div>
       </Modal>
-    </nav>
+    </>
   );
 };

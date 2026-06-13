@@ -54,7 +54,7 @@ export const Welcome: React.FC = () => {
               <div className="text-3xl font-bold text-primary mb-2">3</div>
               <h3 className="text-lg font-semibold mb-2">Compare Responses</h3>
               <p className="text-muted-foreground">
-                Review blind evaluations and discover which models perform best on your leaderboard.
+                Perform blind evaluations and discover which models perform best on your leaderboard.
               </p>
             </div>
           </div>

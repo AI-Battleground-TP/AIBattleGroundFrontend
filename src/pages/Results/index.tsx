@@ -74,7 +74,7 @@ type ExperimentResultDetail = {
 
 type SortOption = "newest" | "most-preferences";
 type StatusFilter = "ALL" | "IN_PROGRESS" | "COMPLETED";
-type ResultTab = "overview" | "pairwise" | "questions" | "judge-questions" | "categories" | "diagnostics";
+type ResultTab = "overview" | "pairwise" | "questions" | "feedbacks" | "judge-questions" | "categories" | "diagnostics";
 
 type QuestionGrouping = {
   questionId: string;
@@ -496,6 +496,7 @@ export const Results: React.FC = () => {
   const [deletingPreferenceId, setDeletingPreferenceId] = useState<string | null>(null);
   const [retryingModelKeys, setRetryingModelKeys] = useState<Record<string, boolean>>({});
   const [diagnosticsModelFilter, setDiagnosticsModelFilter] = useState<string>("ALL");
+  const [expandedFeedbacks, setExpandedFeedbacks] = useState<Record<string, boolean>>({});
   const [expandedResultTabByExperiment, setExpandedResultTabByExperiment] = useState<
     Record<string, ResultTab>
   >({});
@@ -1338,13 +1339,21 @@ export const Results: React.FC = () => {
     }
   };
 
+  const handleToggleFeedback = (testId: string, modelId: string) => {
+    const key = `${testId}-${modelId}`;
+    setExpandedFeedbacks((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
   const handleSelectResultTab = (experimentId: string, tab: ResultTab) => {
     setExpandedResultTabByExperiment((prev) => ({
       ...prev,
       [experimentId]: tab,
     }));
 
-    if (tab === "questions") {
+    if (tab === "questions" || tab === "feedbacks") {
       void loadExperimentResponses(experimentId);
     }
   };
@@ -1768,6 +1777,62 @@ export const Results: React.FC = () => {
               const addModelActionKey = `${experiment.id}:${selectedNewModelId}`;
               const isSubmittingNewModel = isSubmittingNewModelKey === addModelActionKey;
 
+              const feedbacksByModel: Record<
+                string,
+                Array<{
+                  testId: string;
+                  modelId: string;
+                  feedback: string;
+                  questionText: string;
+                  modelResponse: string;
+                }>
+              > = {};
+
+              if (detail) {
+                detail.tests.forEach((test) => {
+                  if (test.model_a_feedback) {
+                    if (!feedbacksByModel[test.model_a_id]) feedbacksByModel[test.model_a_id] = [];
+                    const question = detail.questionMap[test.question_id];
+                    const responses = detail.responsesByQuestion[test.question_id] || [];
+                    const modelResponse =
+                      responses.find((r) => r.model_id === test.model_a_id)?.model_response ||
+                      "Response not found.";
+
+                    feedbacksByModel[test.model_a_id].push({
+                      testId: test.id,
+                      modelId: test.model_a_id,
+                      feedback: test.model_a_feedback,
+                      questionText: question?.text || "Question not found.",
+                      modelResponse,
+                    });
+                  }
+                  if (test.model_b_feedback) {
+                    if (!feedbacksByModel[test.model_b_id]) feedbacksByModel[test.model_b_id] = [];
+                    const question = detail.questionMap[test.question_id];
+                    const responses = detail.responsesByQuestion[test.question_id] || [];
+                    const modelResponse =
+                      responses.find((r) => r.model_id === test.model_b_id)?.model_response ||
+                      "Response not found.";
+
+                    feedbacksByModel[test.model_b_id].push({
+                      testId: test.id,
+                      modelId: test.model_b_id,
+                      feedback: test.model_b_feedback,
+                      questionText: question?.text || "Question not found.",
+                      modelResponse,
+                    });
+                  }
+                });
+              }
+
+              const groupedFeedbackEntries = Object.entries(feedbacksByModel)
+                .map(([modelId, entries]) => ({
+                  modelId,
+                  modelName: getModelName(modelId, detail),
+                  entries,
+                }))
+                .sort((a, b) => a.modelName.localeCompare(b.modelName));
+
               return (
                 <div
                   key={experiment.id}
@@ -2013,7 +2078,7 @@ export const Results: React.FC = () => {
                           <div className="rounded-lg border border-border bg-muted/20 px-3 py-3">
                             <p className="text-xs text-muted-foreground">Run Summary</p>
                             <p className="text-sm font-medium text-foreground">
-                              {runSummary.successCount} success · {runSummary.failCount} fail
+                              {runSummary.successCount} succeeded · {runSummary.failCount} failed
                             </p>
                             {runSummary.failCount > 0 && (
                               <div className="mt-2">
@@ -2114,6 +2179,7 @@ export const Results: React.FC = () => {
                                 ["categories", "Categories"],
                                 ["pairwise", "Pairwise"],
                                 ["questions", "Questions"],
+                                ["feedbacks", "Feedbacks"],
                                 ["diagnostics", "Diagnostics"],
                               ] as const
                             ).map(([tabId, label]) => (
@@ -2883,6 +2949,54 @@ export const Results: React.FC = () => {
                                                           </div>
                                                         </div>
 
+                                                        {pair.tests.some(
+                                                          (t) => t.model_a_feedback || t.model_b_feedback
+                                                        ) && (
+                                                          <div className="mt-4 border-t border-border/60 pt-3">
+                                                            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                                              Judge Feedback
+                                                            </p>
+                                                            <div className="space-y-3">
+                                                              {pair.tests.map(
+                                                                (test, tIndex) =>
+                                                                  (test.model_a_feedback ||
+                                                                    test.model_b_feedback) && (
+                                                                    <div
+                                                                      key={test.id}
+                                                                      className="rounded-lg bg-primary/5 p-3 text-sm"
+                                                                    >
+                                                                      <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary/70">
+                                                                        Evaluation {tIndex + 1}
+                                                                      </p>
+                                                                      <div className="grid gap-3 md:grid-cols-2">
+                                                                        {test.model_a_feedback && (
+                                                                          <div>
+                                                                            <p className="mb-1 text-xs font-semibold text-foreground">
+                                                                              {pair.modelAName}
+                                                                            </p>
+                                                                            <p className="italic text-muted-foreground">
+                                                                              "{test.model_a_feedback}"
+                                                                            </p>
+                                                                          </div>
+                                                                        )}
+                                                                        {test.model_b_feedback && (
+                                                                          <div>
+                                                                            <p className="mb-1 text-xs font-semibold text-foreground">
+                                                                              {pair.modelBName}
+                                                                            </p>
+                                                                            <p className="italic text-muted-foreground">
+                                                                              "{test.model_b_feedback}"
+                                                                            </p>
+                                                                          </div>
+                                                                        )}
+                                                                      </div>
+                                                                    </div>
+                                                                  )
+                                                              )}
+                                                            </div>
+                                                          </div>
+                                                        )}
+
                                                         {(pair.bothGoodVotes > 0 || pair.bothPoorVotes > 0) && (
                                                           <div className="mt-3 flex flex-wrap gap-2">
                                                             {pair.bothGoodVotes > 0 && (
@@ -2911,6 +3025,101 @@ export const Results: React.FC = () => {
                                 ))}
                             </section>
                             )
+                          )}
+
+                          {activeResultTab === "feedbacks" && (
+                            <section className="space-y-6">
+                              <div className="mb-4">
+                                <h4 className="font-semibold text-foreground">Judge Feedbacks</h4>
+                                <p className="text-sm text-muted-foreground">
+                                  Qualitative feedback provided by judges, grouped by model.
+                                </p>
+                              </div>
+
+                              {groupedFeedbackEntries.length === 0 ? (
+                                <section className="rounded-2xl border border-border bg-background p-5 shadow-sm text-center">
+                                  <p className="text-sm text-muted-foreground">
+                                    No judge feedback has been recorded for this experiment yet.
+                                  </p>
+                                </section>
+                              ) : (
+                                <div className="space-y-8">
+                                  {groupedFeedbackEntries.map((group) => (
+                                    <div key={group.modelId} className="space-y-4">
+                                      <div className="flex items-center gap-2 border-b border-border pb-2">
+                                        <h5 className="text-lg font-bold text-foreground">
+                                          {group.modelName}
+                                        </h5>
+                                        <Badge variant="secondary">{group.entries.length}</Badge>
+                                      </div>
+                                      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                                        {group.entries.map((entry, idx) => {
+                                          const isExpanded = !!expandedFeedbacks[`${entry.testId}-${entry.modelId}`];
+                                          return (
+                                            <div
+                                              key={`${entry.testId}-${entry.modelId}-${idx}`}
+                                              className="rounded-xl border border-border bg-background p-5 shadow-sm transition-all hover:border-primary/30"
+                                            >
+                                              <div className="space-y-3">
+                                                <div>
+                                                  <p className="text-xs font-semibold uppercase tracking-wider text-primary">
+                                                    Feedback
+                                                  </p>
+                                                  <p className="mt-1 text-sm italic text-foreground leading-relaxed">
+                                                    &quot;{entry.feedback}&quot;
+                                                  </p>
+                                                </div>
+
+                                                <div className="pt-2">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => handleToggleFeedback(entry.testId, entry.modelId)}
+                                                    className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-primary transition-colors"
+                                                  >
+                                                    {isExpanded ? (
+                                                      <>
+                                                        Hide Context
+                                                        <ChevronUp className="h-3 w-3" />
+                                                      </>
+                                                    ) : (
+                                                      <>
+                                                        Show Question & Response
+                                                        <ChevronDown className="h-3 w-3" />
+                                                      </>
+                                                    )}
+                                                  </button>
+
+                                                  {isExpanded && (
+                                                    <div className="mt-3 space-y-3 border-t border-border/50 pt-3 animate-in fade-in slide-in-from-top-1 duration-200">
+                                                      <div>
+                                                        <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                                                          Question
+                                                        </p>
+                                                        <p className="mt-1 text-sm text-foreground">
+                                                          {entry.questionText}
+                                                        </p>
+                                                      </div>
+                                                      <div>
+                                                        <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                                                          Model Response
+                                                        </p>
+                                                        <div className="mt-1 max-h-40 overflow-y-auto rounded bg-muted/30 p-3 text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                                                          {entry.modelResponse}
+                                                        </div>
+                                                      </div>
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </section>
                           )}
 
                           {activeResultTab === "diagnostics" && (

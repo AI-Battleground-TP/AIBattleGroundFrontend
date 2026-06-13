@@ -10,6 +10,7 @@ import {
   getCompletedExperiments,
   getCompletedJudgeExperiments,
   getEvaluationQuestionsByExperiment,
+  updateTest,
   type BackendDrawBlindTestResponse,
   type BackendEvaluationQuestion,
   type BackendExperiment,
@@ -18,7 +19,7 @@ import type { EvaluationOption } from "../../types";
 
 type TestSelections = Record<string, EvaluationOption>;
 type SavedEvaluation = Record<string, TestSelections>;
-type FeedbackEntry = { commentA: string; commentB: string };
+type FeedbackEntry = { model_a_feedback: string; model_b_feedback: string };
 
 const renderInlineMarkdown = (text: string) => {
   const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\\\(.*?\\\)|\[[^\]]+\]\([^)]+\))/g);
@@ -322,8 +323,8 @@ export const Judge: React.FC = () => {
     setFeedback((prev) => ({
       ...prev,
       [currentTestId]: {
-        commentA: model === "A" ? value : prev[currentTestId]?.commentA || "",
-        commentB: model === "B" ? value : prev[currentTestId]?.commentB || "",
+        model_a_feedback: model === "A" ? value : prev[currentTestId]?.model_a_feedback || "",
+        model_b_feedback: model === "B" ? value : prev[currentTestId]?.model_b_feedback || "",
       },
     }));
   };
@@ -339,6 +340,17 @@ export const Judge: React.FC = () => {
         [experimentId]: [...existing, draw],
       };
     });
+
+    // Pre-populate feedback if it exists
+    if (draw.test.id && (draw.test.model_a_feedback || draw.test.model_b_feedback)) {
+        setFeedback(prev => ({
+            ...prev,
+            [draw.test.id]: {
+                model_a_feedback: draw.test.model_a_feedback || "",
+                model_b_feedback: draw.test.model_b_feedback || ""
+            }
+        }));
+    }
   };
 
   const loadExperiments = async () => {
@@ -436,6 +448,16 @@ export const Judge: React.FC = () => {
     setIsSavingPreference(true);
     try {
       const accessToken = getAccessToken();
+
+      // Save feedback if present
+      const currentFeedback = feedback[currentTestId];
+      if (currentFeedback && (currentFeedback.model_a_feedback || currentFeedback.model_b_feedback)) {
+          await updateTest(accessToken, currentTestId, {
+              model_a_feedback: currentFeedback.model_a_feedback || null,
+              model_b_feedback: currentFeedback.model_b_feedback || null
+          });
+      }
+
       const answeredPreferenceQuestions = evaluationQuestions
         .map((question) => ({
           question,
@@ -653,9 +675,9 @@ export const Judge: React.FC = () => {
           </div>
         </div>
         <div className="text-right">
-          <div className="text-sm text-muted-foreground">Session Progress</div>
+          <div className="text-sm text-muted-foreground">Completed Progress</div>
           <div className="text-lg font-semibold text-foreground">
-            {sessionSavedCount}/{sessionDrawsForExperiment.length}
+            {sessionSavedCount}
           </div>
         </div>
       </div>
@@ -701,7 +723,7 @@ export const Judge: React.FC = () => {
               <Textarea
                 label="Optional feedback for Model A"
                 placeholder="What worked well? What was missing or incorrect?"
-                value={currentFeedback?.commentA || ""}
+                value={currentFeedback?.model_a_feedback || ""}
                 onChange={(e) => handleFeedbackChange("A", e.target.value)}
                 rows={3}
                 disabled={isCurrentTestSaved}
@@ -721,7 +743,7 @@ export const Judge: React.FC = () => {
               <Textarea
                 label="Optional feedback for Model B"
                 placeholder="What worked well? What was missing or incorrect?"
-                value={currentFeedback?.commentB || ""}
+                value={currentFeedback?.model_b_feedback || ""}
                 onChange={(e) => handleFeedbackChange("B", e.target.value)}
                 rows={3}
                 disabled={isCurrentTestSaved}
@@ -852,7 +874,7 @@ export const Judge: React.FC = () => {
         </Button>
       </div>
 
-      <Card title="Session Progress">
+      <Card title={`Completed Progress: ${sessionSavedCount}`}>
         <div className="space-y-2">
           {sessionDrawsForExperiment.map((draw, index) => {
             const savedSelections = evaluations[draw.test.id] || {};

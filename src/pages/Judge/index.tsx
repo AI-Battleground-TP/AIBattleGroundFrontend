@@ -21,7 +21,7 @@ type SavedEvaluation = Record<string, TestSelections>;
 type FeedbackEntry = { commentA: string; commentB: string };
 
 const renderInlineMarkdown = (text: string) => {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g);
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`|\\\(.*?\\\)|\[[^\]]+\]\([^)]+\))/g);
 
   return parts
     .filter(Boolean)
@@ -38,6 +38,17 @@ const renderInlineMarkdown = (text: string) => {
           >
             {part.slice(1, -1)}
           </code>
+        );
+      }
+
+      if (part.startsWith("\\(") && part.endsWith("\\)")) {
+        return (
+          <span
+            key={`${part}-${index}`}
+            className="font-serif italic bg-muted/20 px-1 rounded text-[1.05em]"
+          >
+            {part.slice(2, -2)}
+          </span>
         );
       }
 
@@ -65,6 +76,11 @@ const MarkdownResponse: React.FC<{ content: string }> = ({ content }) => {
   const blocks: React.ReactNode[] = [];
   let paragraphLines: string[] = [];
   let listItems: string[] = [];
+  let codeLines: string[] = [];
+  let isCodeBlock = false;
+  let codeLanguage = "";
+  let mathLines: string[] = [];
+  let isMathBlock = false;
 
   const flushParagraph = () => {
     if (paragraphLines.length === 0) {
@@ -100,23 +116,103 @@ const MarkdownResponse: React.FC<{ content: string }> = ({ content }) => {
     listItems = [];
   };
 
-  lines.forEach((line) => {
+  const flushCode = () => {
+    if (codeLines.length === 0 && !isCodeBlock) return;
+    blocks.push(
+      <div key={`code-${blocks.length}`} className="my-4 overflow-hidden rounded-lg border border-border">
+        {codeLanguage && (
+          <div className="bg-muted px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground border-b border-border">
+            {codeLanguage}
+          </div>
+        )}
+        <pre className="overflow-x-auto bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-200">
+          <code>{codeLines.join("\n")}</code>
+        </pre>
+      </div>
+    );
+    codeLines = [];
+    isCodeBlock = false;
+    codeLanguage = "";
+  };
+
+  const flushMath = () => {
+    if (mathLines.length === 0 && !isMathBlock) return;
+    blocks.push(
+      <div key={`math-${blocks.length}`} className="my-6 overflow-x-auto py-4 text-center bg-muted/10 rounded-lg border border-border/50 shadow-sm">
+        <div className="inline-block text-lg font-serif italic text-foreground px-6 whitespace-pre-wrap">
+          {mathLines.join("\n")}
+        </div>
+      </div>
+    );
+    mathLines = [];
+    isMathBlock = false;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.trim();
+
+    if (isCodeBlock) {
+      if (trimmed.startsWith("```")) {
+        flushCode();
+      } else {
+        codeLines.push(line);
+      }
+      continue;
+    }
+
+    if (isMathBlock) {
+      if (trimmed.includes("\\]")) {
+        const parts = line.split("\\]");
+        mathLines.push(parts[0]);
+        flushMath();
+        const remaining = parts.slice(1).join("\\]").trim();
+        if (remaining) paragraphLines.push(remaining);
+      } else {
+        mathLines.push(line);
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      flushParagraph();
+      flushList();
+      isCodeBlock = true;
+      codeLanguage = trimmed.slice(3).trim();
+      continue;
+    }
+
+    if (trimmed.startsWith("\\[")) {
+      flushParagraph();
+      flushList();
+      isMathBlock = true;
+      const content = trimmed.slice(2);
+      if (content.includes("\\]")) {
+        const parts = content.split("\\]");
+        mathLines.push(parts[0]);
+        flushMath();
+        const remaining = parts.slice(1).join("\\]").trim();
+        if (remaining) paragraphLines.push(remaining);
+      } else {
+        mathLines.push(content);
+      }
+      continue;
+    }
 
     if (!trimmed) {
       flushParagraph();
       flushList();
-      return;
+      continue;
     }
 
     if (/^(-{3,}|\*{3,})$/.test(trimmed)) {
       flushParagraph();
       flushList();
-      blocks.push(<hr key={`hr-${blocks.length}`} className="border-border" />);
-      return;
+      blocks.push(<hr key={`hr-${blocks.length}`} className="my-6 border-border" />);
+      continue;
     }
 
-    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
     if (headingMatch) {
       flushParagraph();
       flushList();
@@ -125,31 +221,35 @@ const MarkdownResponse: React.FC<{ content: string }> = ({ content }) => {
       const headingText = headingMatch[2];
       const className =
         level === 1
-          ? "text-lg font-semibold text-foreground"
+          ? "text-xl font-bold text-foreground mt-4 mb-2"
           : level === 2
-            ? "text-base font-semibold text-foreground"
-            : "text-sm font-semibold uppercase tracking-wide text-muted-foreground";
+            ? "text-lg font-bold text-foreground mt-3 mb-2"
+            : level === 3
+              ? "text-base font-semibold text-foreground mt-2 mb-1"
+              : "text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2 mb-1";
 
       blocks.push(
         <div key={`h-${blocks.length}`} className={className}>
           {renderInlineMarkdown(headingText)}
         </div>
       );
-      return;
+      continue;
     }
 
     const listMatch = trimmed.match(/^([-*]|\d+\.)\s+(.*)$/);
     if (listMatch) {
       flushParagraph();
       listItems.push(listMatch[2]);
-      return;
+      continue;
     }
 
     paragraphLines.push(trimmed);
-  });
+  }
 
   flushParagraph();
   flushList();
+  flushCode();
+  flushMath();
 
   return <div className="space-y-4 text-sm">{blocks}</div>;
 };

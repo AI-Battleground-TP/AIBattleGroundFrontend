@@ -61,12 +61,16 @@ export const Leaderboard: React.FC = () => {
         const token = localStorage.getItem("bt_access_token");
 
         if (!paramExperimentId && token) {
-          const { getExperiments } = await import("../../lib/authApi");
-          const exps = await getExperiments(token, 0, 100);
-          
-          const targetExp = exps.find(e => e.name === TARGET_EXPERIMENT_NAME);
-          if (targetExp) {
-              expId = targetExp.id;
+          try {
+            const { getExperiments } = await import("../../lib/authApi");
+            const exps = await getExperiments(token, 0, 100);
+            
+            const targetExp = exps.find(e => e.name === TARGET_EXPERIMENT_NAME);
+            if (targetExp) {
+                expId = targetExp.id;
+            }
+          } catch (err) {
+            console.warn("Leaderboard: Could not fetch user-specific experiments, falling back to default public ID.", err);
           }
         }
 

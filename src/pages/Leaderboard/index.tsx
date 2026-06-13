@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
+import { useParams } from "react-router-dom";
 import { Card } from "../../components";
 import { Progress } from "../../components/ui/progress";
 import {
@@ -39,8 +40,10 @@ interface LeaderboardEntry {
 }
 
 const TARGET_EXPERIMENT_NAME = "İzmir Yerel Bilgi Benchmark";
+const DEFAULT_PUBLIC_EXPERIMENT_ID = "47b627a9-20d3-42ee-b9e3-2864ced04bc0";
 
 export const Leaderboard: React.FC = () => {
+  const { experimentId: paramExperimentId } = useParams<{ experimentId?: string }>();
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [sortField, setSortField] = useState<SortField>("eloRating");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
@@ -54,31 +57,27 @@ export const Leaderboard: React.FC = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
+        let expId = paramExperimentId || DEFAULT_PUBLIC_EXPERIMENT_ID;
         const token = localStorage.getItem("bt_access_token");
-        if (!token) return;
 
-        let expId = "";
-        const { getExperiments } = await import("../../lib/authApi");
-        const exps = await getExperiments(token, 0, 100);
-        
-        const targetExp = exps.find(e => e.name === TARGET_EXPERIMENT_NAME);
-        if (targetExp) {
-            expId = targetExp.id;
-        } else if (exps.length > 0) {
-            expId = exps[0].id;
-        } else {
-            setLoading(false);
-            return;
+        if (!paramExperimentId && token) {
+          const { getExperiments } = await import("../../lib/authApi");
+          const exps = await getExperiments(token, 0, 100);
+          
+          const targetExp = exps.find(e => e.name === TARGET_EXPERIMENT_NAME);
+          if (targetExp) {
+              expId = targetExp.id;
+          }
         }
 
-        const exp = await getExperimentById(token, expId);
+        const exp = await getExperimentById(expId);
         setExperimentName(exp.name);
 
         const [ratingsData, modelsData, questionsData, categoryRatingsDataRaw] = await Promise.all([
-          getExperimentModelRatings(token, expId).catch(() => null),
-          getExperimentModels(token, expId).catch(() => []),
-          getQuestionsByPool(token, exp.input_pool_id).catch(() => []),
-          getExperimentCategoryRatings(token, expId).catch(() => null),
+          getExperimentModelRatings(expId).catch(() => null),
+          getExperimentModels(expId).catch(() => []),
+          getQuestionsByPool(exp.input_pool_id).catch(() => []),
+          getExperimentCategoryRatings(expId).catch(() => null),
         ]);
 
         const uniqueCategories = Array.from(

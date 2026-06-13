@@ -203,7 +203,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const poolsWithQuestions = await Promise.all(
       pools.map(async (pool) => {
-        const questions = await getQuestionsByPool(accessToken, pool.id);
+        const questions = await getQuestionsByPool(pool.id);
         return {
           id: pool.id,
           name: pool.name,
@@ -371,7 +371,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const refreshQuestionPool = async (poolId: string): Promise<void> => {
     const { accessToken } = getAuthContext();
     const pool = await getInputPoolById(accessToken, poolId);
-    const questions = await getQuestionsByPool(accessToken, poolId);
+    const questions = await getQuestionsByPool(poolId);
 
     const nextPool: QuestionPool = {
       id: pool.id,

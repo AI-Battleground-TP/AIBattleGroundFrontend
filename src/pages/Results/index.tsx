@@ -897,7 +897,7 @@ export const Results: React.FC = () => {
             ] =
               await Promise.allSettled([
                 getExperimentModelPreferenceSummary(accessToken, experiment.id),
-                getExperimentModelRatings(accessToken, experiment.id),
+                getExperimentModelRatings(experiment.id),
                 getExperimentModelTokenUsage(accessToken, experiment.id),
                 getTestsByExperiment(accessToken, experiment.id),
                 getEvaluationQuestionsByExperiment(accessToken, experiment.id),
@@ -1071,7 +1071,7 @@ export const Results: React.FC = () => {
         baseDetail.summary;
       const ratings =
         !baseDetail?.ratings || baseDetail.ratings.model_ratings.length === 0
-          ? await getExperimentModelRatings(accessToken, experimentId).catch(() =>
+          ? await getExperimentModelRatings(experimentId).catch(() =>
               createEmptyRatingsSummary(experimentId)
             )
         :
@@ -1098,7 +1098,7 @@ export const Results: React.FC = () => {
       let categoryRatings = baseDetail?.categoryRatings;
       if (!categoryRatings) {
         try {
-          const rawCatRatings: any = await getExperimentCategoryRatings(accessToken, experimentId);
+          const rawCatRatings: any = await getExperimentCategoryRatings(experimentId);
           console.log("Fetched raw categoryRatings:", rawCatRatings);
 
           if (rawCatRatings && typeof rawCatRatings === "object" && !Array.isArray(rawCatRatings)) {

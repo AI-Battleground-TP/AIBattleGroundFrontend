@@ -29,7 +29,7 @@ import {
   SelectValue,
 } from "./ui/select";
 import { User, MoreVertical } from "lucide-react";
-import { createOrganization } from "../lib/authApi";
+import { createOrganization, joinOrganization } from "../lib/authApi";
 
 export const Navbar: React.FC = () => {
   const location = useLocation();
@@ -51,6 +51,8 @@ export const Navbar: React.FC = () => {
   const [switchOrgError, setSwitchOrgError] = useState("");
   const [newOrganizationName, setNewOrganizationName] = useState("");
   const [isCreatingOrganization, setIsCreatingOrganization] = useState(false);
+  const [joinOrganizationId, setJoinOrganizationId] = useState("");
+  const [isJoiningOrganization, setIsJoiningOrganization] = useState(false);
 
   const isActive = (path: string) => location.pathname === path;
 
@@ -128,6 +130,35 @@ export const Navbar: React.FC = () => {
       );
     } finally {
       setIsCreatingOrganization(false);
+    }
+  };
+
+  const handleJoinOrganization = async () => {
+    const orgId = joinOrganizationId.trim();
+    if (!orgId) {
+      setSwitchOrgError("Organization ID is required.");
+      return;
+    }
+
+    const accessToken = localStorage.getItem("bt_access_token");
+    if (!accessToken) {
+      setSwitchOrgError("Missing access token.");
+      return;
+    }
+
+    setIsJoiningOrganization(true);
+    setSwitchOrgError("");
+    try {
+      const organization = await joinOrganization(accessToken, orgId);
+      await refreshOrganizations();
+      setPendingOrganizationId(organization.id);
+      setJoinOrganizationId("");
+    } catch (error) {
+      setSwitchOrgError(
+        error instanceof Error ? error.message : "Could not join organization."
+      );
+    } finally {
+      setIsJoiningOrganization(false);
     }
   };
 
@@ -406,6 +437,35 @@ export const Navbar: React.FC = () => {
                   }
                 >
                   {isCreatingOrganization ? "Creating..." : "Create"}
+                </ShadcnButton>
+              </div>
+            </div>
+
+            <div className="border-t border-border pt-3">
+              <p className="mb-2 text-sm font-medium text-foreground">
+                Join Organization
+              </p>
+              <div className="flex gap-2">
+                <Input
+                  value={joinOrganizationId}
+                  onChange={(event) => {
+                    setJoinOrganizationId(event.target.value);
+                    setSwitchOrgError("");
+                  }}
+                  placeholder="Organization ID"
+                  disabled={isJoiningOrganization || isSwitchingOrganization}
+                />
+                <ShadcnButton
+                  type="button"
+                  variant="outline"
+                  onClick={handleJoinOrganization}
+                  disabled={
+                    isJoiningOrganization ||
+                    isSwitchingOrganization ||
+                    !joinOrganizationId.trim()
+                  }
+                >
+                  {isJoiningOrganization ? "Joining..." : "Join"}
                 </ShadcnButton>
               </div>
             </div>

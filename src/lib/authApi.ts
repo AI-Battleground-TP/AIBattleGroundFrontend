@@ -380,6 +380,18 @@ export const createOrganization = (
     body: JSON.stringify({ name: organizationName }),
   });
 
+export const joinOrganization = (
+  accessToken: string,
+  organizationId: string
+) =>
+  requestJson<OrganizationItem>("/organizations/join", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ organization_id: organizationId }),
+  });
+
 export const selectOrganizationToken = (
   accessToken: string,
   organizationId: string
@@ -492,7 +504,6 @@ export const getInputPoolById = (accessToken: string, poolId: string) =>
   });
 
 export const getQuestionsByPool = (
-  accessToken: string,
   poolId: string,
   skip = 0,
   limit = 1000
@@ -501,9 +512,6 @@ export const getQuestionsByPool = (
     `/questions/pool/${poolId}?skip=${skip}&limit=${limit}`,
     {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
     }
   );
 
@@ -833,16 +841,12 @@ export const attachModelToExperiment = (
   );
 
 export const getExperimentModels = (
-  accessToken: string,
   experimentId: string
 ) =>
   requestJson<BackendExperimentModelPrompt[]>(
     `/experiments/${experimentId}/models`,
     {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
     }
   );
 
@@ -923,12 +927,9 @@ export const getExperiments = (accessToken: string, skip = 0, limit = 100) =>
     },
   });
 
-export const getExperimentById = (accessToken: string, experimentId: string) =>
+export const getExperimentById = (experimentId: string) =>
   requestJson<BackendExperiment>(`/experiments/${experimentId}`, {
     method: "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
   });
 
 export const createEvaluationQuestion = (
@@ -1080,16 +1081,12 @@ export const getExperimentModelPreferenceSummary = (
   );
 
 export const getExperimentModelRatings = (
-  accessToken: string,
   experimentId: string
 ) =>
   requestJson<BackendExperimentModelRatingsSummary>(
     `/analytics/experiments/${experimentId}/model-ratings`,
     {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
     }
   );
 
@@ -1215,16 +1212,12 @@ export interface BackendCategoryRatingSummary {
 }
 
 export const getExperimentCategoryRatings = (
-  accessToken: string,
   experimentId: string
 ) =>
   requestJson<BackendCategoryRatingSummary[]>(
     `/analytics/experiments/${experimentId}/category-ratings`,
     {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
     }
   );
 

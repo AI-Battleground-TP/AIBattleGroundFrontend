@@ -53,6 +53,7 @@ export const AppRouter: React.FC = () => {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Login />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
+          <Route path="/leaderboard/:experimentId" element={<Leaderboard />} />
           <Route path="/guidelines" element={<Guidelines />} />
           <Route
             path="/dashboard"

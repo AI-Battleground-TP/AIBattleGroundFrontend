@@ -36,7 +36,6 @@ interface LeaderboardEntry {
   eloRating: number;
   winRate: number;
   totalMatchups: number;
-  systemPrompt: string;
 }
 
 const TARGET_EXPERIMENT_NAME = "İzmir Yerel Bilgi Benchmark";
@@ -98,7 +97,6 @@ export const Leaderboard: React.FC = () => {
 
         const buildEntries = (ratingsList: any[]) => {
           return ratingsList.map((row) => {
-            const promptEntry = modelsData.find((m) => m.model_id === row.model_id);
             const total = row.wins + row.losses + row.draws;
             const winRate = total > 0 ? (row.wins / total) * 100 : 0;
             return {
@@ -108,7 +106,6 @@ export const Leaderboard: React.FC = () => {
               eloRating: Math.round(row.rating),
               winRate: winRate,
               totalMatchups: total,
-              systemPrompt: promptEntry?.system_prompt || "N/A",
             };
           });
         };
@@ -246,7 +243,6 @@ export const Leaderboard: React.FC = () => {
                 >
                   Win Rate {getSortIcon("winRate")}
                 </TableHead>
-                <TableHead className="w-[40%]">System Prompt</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -276,16 +272,11 @@ export const Leaderboard: React.FC = () => {
                       <Progress value={entry.winRate} className="w-16 h-2" />
                     </div>
                   </TableCell>
-                  <TableCell>
-                    <div className="text-sm text-muted-foreground line-clamp-3 overflow-hidden text-ellipsis whitespace-pre-wrap max-h-20" title={entry.systemPrompt}>
-                      {entry.systemPrompt}
-                    </div>
-                  </TableCell>
                 </TableRow>
               ))}
               {sortedLeaderboard.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
                     No models found for this experiment.
                   </TableCell>
                 </TableRow>

@@ -325,7 +325,19 @@ const API_BASE_URL =
 const resolveErrorMessage = async (response: Response): Promise<string> => {
   try {
     const payload = (await response.json()) as ApiErrorPayload;
-    return payload.detail || payload.message || `HTTP ${response.status}`;
+    const detail =
+      typeof payload.detail === "string"
+        ? payload.detail
+        : payload.detail
+          ? JSON.stringify(payload.detail)
+          : "";
+    const message =
+      typeof payload.message === "string"
+        ? payload.message
+        : payload.message
+          ? JSON.stringify(payload.message)
+          : "";
+    return detail || message || `HTTP ${response.status}`;
   } catch {
     return `HTTP ${response.status}`;
   }

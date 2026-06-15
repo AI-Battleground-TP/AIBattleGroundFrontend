@@ -17,6 +17,7 @@ import {
   getMe,
   getMyOrganizations,
   loginRequest,
+  joinOrganization,
   selectOrganizationToken,
   signupRequest,
   type OrganizationItem,
@@ -26,6 +27,11 @@ import { Eye, EyeOff } from "lucide-react";
 type LoginStep = "credentials" | "organization";
 type SignupStep = "credentials" | "organization";
 type SignupOrgMode = "join" | "new";
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const isValidUuid = (value: string) => UUID_PATTERN.test(value.trim());
 
 const mapSignupErrorMessage = (error: unknown, signupOrgMode: SignupOrgMode) => {
   const fallbackMessage = "Sign up islemi basarisiz.";
@@ -39,6 +45,15 @@ const mapSignupErrorMessage = (error: unknown, signupOrgMode: SignupOrgMode) => 
     error.message.trim() === "Email address already registered."
   ) {
     return "An account with this email already exists. If the organization ID was incorrect, log in and continue with the correct organization.";
+  }
+
+  if (
+    signupOrgMode === "join" &&
+    (error.message.includes("uuid_parsing") ||
+      error.message.includes("valid UUID") ||
+      error.message.includes("invalid character"))
+  ) {
+    return "Organization ID must be a valid UUID.";
   }
 
   return error.message;
@@ -75,6 +90,11 @@ export const Login: React.FC = () => {
   const [signupOrganizationName, setSignupOrganizationName] = useState("");
 
   const resetErrors = () => setErrorMessage("");
+  const clearSignupError = () => {
+    if (errorMessage) {
+      setErrorMessage("");
+    }
+  };
 
   const handleLoginCredentialsSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -181,6 +201,11 @@ export const Login: React.FC = () => {
       setIsSubmitting(false);
       return;
     }
+    if (signupOrgMode === "join" && !isValidUuid(normalizedOrgId)) {
+      setErrorMessage("Organization ID must be a valid UUID.");
+      setIsSubmitting(false);
+      return;
+    }
     if (signupOrgMode === "new" && !normalizedOrgName) {
       setErrorMessage("New organization icin ad gerekli.");
       setIsSubmitting(false);
@@ -210,6 +235,8 @@ export const Login: React.FC = () => {
         );
         selectedOrganizationId = createdOrg.id;
         selectedOrganizationName = createdOrg.name;
+      } else {
+        await joinOrganization(initialToken.access_token, normalizedOrgId);
       }
 
       if (!selectedOrganizationId) {
@@ -470,7 +497,11 @@ export const Login: React.FC = () => {
                   className="gap-3"
                 >
                   <label className="flex items-center gap-3 rounded-md border p-3 cursor-pointer">
-                    <RadioGroupItem value="join" id="join-existing-org" />
+                    <RadioGroupItem
+                      value="join"
+                      id="join-existing-org"
+                      onClick={clearSignupError}
+                    />
                     <div>
                       <p className="font-medium">Join with Organization ID</p>
                       <p className="text-sm text-muted-foreground">
@@ -479,7 +510,11 @@ export const Login: React.FC = () => {
                     </div>
                   </label>
                   <label className="flex items-center gap-3 rounded-md border p-3 cursor-pointer">
-                    <RadioGroupItem value="new" id="create-new-org" />
+                    <RadioGroupItem
+                      value="new"
+                      id="create-new-org"
+                      onClick={clearSignupError}
+                    />
                     <div>
                       <p className="font-medium">Create New Organization</p>
                       <p className="text-sm text-muted-foreground">
@@ -497,7 +532,10 @@ export const Login: React.FC = () => {
                     <Input
                       id="signup-organization-id"
                       value={signupOrganizationId}
-                      onChange={(event) => setSignupOrganizationId(event.target.value)}
+                      onChange={(event) => {
+                        setSignupOrganizationId(event.target.value);
+                        clearSignupError();
+                      }}
                       placeholder="UUID organization id"
                       required
                     />
@@ -510,7 +548,10 @@ export const Login: React.FC = () => {
                     id="signup-new-org-name"
                     value={signupOrganizationName}
                     onChange={(event) =>
-                      setSignupOrganizationName(event.target.value)
+                      {
+                        setSignupOrganizationName(event.target.value);
+                        clearSignupError();
+                      }
                     }
                     placeholder="Your new organization"
                     required

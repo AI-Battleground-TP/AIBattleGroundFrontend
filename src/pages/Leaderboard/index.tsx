@@ -20,7 +20,6 @@ import {
 import {
   getExperimentById,
   getExperimentModelRatings,
-  getExperimentModels,
   getQuestionsByPool,
   getExperimentCategoryRatings,
 } from "../../lib/authApi";
@@ -76,9 +75,8 @@ export const Leaderboard: React.FC = () => {
         const exp = await getExperimentById(expId);
         setExperimentName(exp.name);
 
-        const [ratingsData, modelsData, questionsData, categoryRatingsDataRaw] = await Promise.all([
+        const [ratingsData, questionsData, categoryRatingsDataRaw] = await Promise.all([
           getExperimentModelRatings(expId).catch(() => null),
-          getExperimentModels(expId).catch(() => []),
           getQuestionsByPool(exp.input_pool_id).catch(() => []),
           getExperimentCategoryRatings(expId).catch(() => null),
         ]);
